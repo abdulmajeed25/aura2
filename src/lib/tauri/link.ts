@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BacklinkEntry,
+  EmbedResult,
   HeadingEntry,
   LinkCandidate,
   OutgoingLinkEntry,
@@ -20,4 +21,16 @@ export function getOutline(path: string): Promise<HeadingEntry[]> {
 
 export function listLinkCandidates(): Promise<LinkCandidate[]> {
   return invoke<LinkCandidate[]>("list_link_candidates");
+}
+
+export function resolveEmbed(
+  target: string,
+  heading: string | null,
+  blockRef: string | null
+): Promise<EmbedResult | null> {
+  return invoke<EmbedResult | null>("resolve_embed", {
+    target,
+    heading,
+    blockRef,
+  });
 }

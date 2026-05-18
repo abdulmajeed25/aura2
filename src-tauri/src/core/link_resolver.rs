@@ -19,6 +19,8 @@ pub struct RawWikiLink {
     pub column: u32,
     /// Byte offset of `[[` in the source.
     pub byte_offset: usize,
+    /// `true` when the link is `![[...]]` (embed/transclusion) rather than `[[...]]`.
+    pub is_embed: bool,
 }
 
 /// Scan a document for `[[...]]` wiki links. Code blocks/spans are NOT excluded —
@@ -59,15 +61,19 @@ pub fn scan_wiki_links(content: &str) -> Vec<RawWikiLink> {
                     if bytes[j] == b']' && bytes[j + 1] == b']' {
                         let inner = &content[start + 2..j];
                         if let Some(parsed) = parse_link_inner(inner) {
+                            let is_embed = start > 0 && bytes[start - 1] == b'!';
+                            let raw_start = if is_embed { start - 1 } else { start };
+                            let col_adj = if is_embed { col.saturating_sub(1) } else { col };
                             out.push(RawWikiLink {
-                                raw: content[start..j + 2].to_string(),
+                                raw: content[raw_start..j + 2].to_string(),
                                 target: parsed.target,
                                 heading: parsed.heading,
                                 block_ref: parsed.block_ref,
                                 display: parsed.display,
                                 line: start_line,
-                                column: col,
-                                byte_offset: start,
+                                column: col_adj,
+                                byte_offset: raw_start,
+                                is_embed,
                             });
                         }
                         i = j + 2;

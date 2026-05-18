@@ -133,6 +133,43 @@ pub fn parse_outline(content: &str) -> Vec<HeadingEntry> {
         .collect()
 }
 
+/// Return the subsection that starts at the heading matching `heading_text`
+/// (case-insensitive, after stripping `#` markers and trimming) and continues
+/// until the next heading at the same or higher level. The matched heading
+/// itself is included in the returned slice.
+pub fn extract_section_by_heading(content: &str, target: &str) -> Option<String> {
+    let (_, body, _) = split_frontmatter(content);
+    let blocks = extract_blocks(body);
+    let needle = target.trim().to_ascii_lowercase();
+
+    let start_idx = blocks.iter().position(|b| {
+        b.block_type == BlockType::Heading
+            && heading_text(&b.content).to_ascii_lowercase() == needle
+    })?;
+    let start_level = blocks[start_idx].level;
+
+    let mut end_byte = body.len();
+    for b in &blocks[start_idx + 1..] {
+        if b.block_type == BlockType::Heading && b.level <= start_level {
+            end_byte = b.byte_start;
+            break;
+        }
+    }
+    let start_byte = blocks[start_idx].byte_start;
+    Some(body[start_byte..end_byte].trim_end().to_string())
+}
+
+/// Return the content of the block whose `user_ref` (trailing `^anchor`) matches.
+pub fn extract_block_by_user_ref(content: &str, anchor: &str) -> Option<String> {
+    let (_, body, _) = split_frontmatter(content);
+    let blocks = extract_blocks(body);
+    let needle = anchor.trim();
+    blocks
+        .into_iter()
+        .find(|b| b.user_ref.as_deref() == Some(needle))
+        .map(|b| b.content)
+}
+
 fn extract_title_from_frontmatter(fm: &str) -> Option<String> {
     for line in fm.lines() {
         if let Some(rest) = line.strip_prefix("title:") {
@@ -367,6 +404,35 @@ mod tests {
         assert_eq!(doc.blocks.len(), 2);
         assert_eq!(doc.blocks[0].user_ref.as_deref(), Some("abc123"));
         assert!(doc.blocks[1].user_ref.is_none());
+    }
+
+    #[test]
+    fn extracts_section_under_heading_until_next_same_or_higher_level() {
+        let src = "# Top\n\nintro\n\n## Sub\n\nsub body line one\n\nsub body line two\n\n## Other\n\nother";
+        let section = extract_section_by_heading(src, "Sub").unwrap();
+        assert!(section.starts_with("## Sub"));
+        assert!(section.contains("sub body line one"));
+        assert!(section.contains("sub body line two"));
+        assert!(!section.contains("## Other"));
+    }
+
+    #[test]
+    fn extracts_section_continues_into_deeper_headings() {
+        let src = "## Outer\n\nbody\n\n### Inner\n\ninner body\n\n## Next";
+        let section = extract_section_by_heading(src, "Outer").unwrap();
+        assert!(section.contains("### Inner"));
+        assert!(section.contains("inner body"));
+        assert!(!section.contains("## Next"));
+    }
+
+    #[test]
+    fn extracts_block_by_user_anchor() {
+        let src = "First para.\n^one\n\nSecond para.\n^two\n\nThird para.";
+        let one = extract_block_by_user_ref(src, "one").unwrap();
+        assert!(one.contains("First para."));
+        let two = extract_block_by_user_ref(src, "two").unwrap();
+        assert!(two.contains("Second para."));
+        assert!(extract_block_by_user_ref(src, "missing").is_none());
     }
 
     #[test]

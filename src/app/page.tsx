@@ -2,8 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderOpen, RefreshCw, Save } from "lucide-react";
+import {
+  Eye,
+  FolderOpen,
+  PenLine,
+  RefreshCw,
+  Save,
+  SplitSquareHorizontal,
+} from "lucide-react";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
+import { ReadingView } from "@/components/editor/ReadingView";
 import { FileExplorer } from "@/components/sidebar/FileExplorer";
 import { Backlinks } from "@/components/sidebar/Backlinks";
 import { Outline } from "@/components/sidebar/Outline";
@@ -12,13 +20,15 @@ import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
 import type { VaultChangeEvent } from "@/types/vault";
 
+type ViewMode = "source" | "live" | "reading";
+
 export default function HomePage() {
   const { info, tree, loading, error, pickAndOpen, refreshTree } =
     useVaultStore();
   const { activePath, content, dirty, saving, save } = useEditorStore();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [mode, setMode] = useState<ViewMode>("live");
 
-  // Listen once for filesystem events and propagate them into both stores.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<VaultChangeEvent>("vault://changed", (event) => {
@@ -39,7 +49,6 @@ export default function HomePage() {
     };
   }, []);
 
-  // Bump the refresh key after every save so backlinks/outline re-fetch.
   useEffect(() => {
     if (!saving && !dirty) setRefreshKey((k) => k + 1);
   }, [saving, dirty]);
@@ -102,11 +111,12 @@ export default function HomePage() {
               <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)]">
                 <span className="truncate">{activePath}</span>
                 {dirty && <span className="text-amber-400">●</span>}
+                <ModeToggle mode={mode} onChange={setMode} />
                 <button
                   type="button"
                   onClick={() => void save()}
                   disabled={!dirty || saving}
-                  className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] disabled:opacity-40"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] disabled:opacity-40"
                   title="Save (Ctrl/Cmd+S)"
                 >
                   <Save size={12} />
@@ -114,7 +124,16 @@ export default function HomePage() {
                 </button>
               </div>
               <div className="flex-1 min-h-0">
-                <CodeMirrorEditor path={activePath} initialContent={content} />
+                {mode === "reading" ? (
+                  <ReadingView path={activePath} content={content} />
+                ) : (
+                  <CodeMirrorEditor
+                    key={`${activePath}::${mode}`}
+                    path={activePath}
+                    initialContent={content}
+                    liveTransclusion={mode === "live"}
+                  />
+                )}
               </div>
             </>
           ) : (
@@ -138,8 +157,70 @@ export default function HomePage() {
           )}
         </aside>
       </div>
-      <StatusBar />
+      <StatusBar mode={mode} />
     </div>
+  );
+}
+
+function ModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: ViewMode;
+  onChange: (m: ViewMode) => void;
+}) {
+  return (
+    <div className="ml-auto flex items-center gap-0.5 rounded border border-[var(--color-border)] p-0.5">
+      <ModeButton
+        active={mode === "source"}
+        onClick={() => onChange("source")}
+        title="Source"
+      >
+        <PenLine size={12} />
+      </ModeButton>
+      <ModeButton
+        active={mode === "live"}
+        onClick={() => onChange("live")}
+        title="Live Preview"
+      >
+        <SplitSquareHorizontal size={12} />
+      </ModeButton>
+      <ModeButton
+        active={mode === "reading"}
+        onClick={() => onChange("reading")}
+        title="Reading"
+      >
+        <Eye size={12} />
+      </ModeButton>
+    </div>
+  );
+}
+
+function ModeButton({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={
+        "inline-flex items-center px-2 py-1 rounded text-[11px] " +
+        (active
+          ? "bg-[var(--color-surface-hover)] text-[var(--color-accent)]"
+          : "text-[var(--color-text-faint)] hover:text-[var(--color-text)]")
+      }
+    >
+      {children}
+    </button>
   );
 }
 
@@ -155,13 +236,16 @@ function TopBar() {
   );
 }
 
-function StatusBar() {
+function StatusBar({ mode }: { mode: ViewMode }) {
   const info = useVaultStore((s) => s.info);
   const activePath = useEditorStore((s) => s.activePath);
+  const modeLabel =
+    mode === "source" ? "Source" : mode === "live" ? "Live Preview" : "Reading";
   return (
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>
       {activePath && <span className="truncate">{activePath}</span>}
+      <span className="ml-auto">{modeLabel}</span>
     </footer>
   );
 }

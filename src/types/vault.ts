@@ -65,3 +65,12 @@ export interface LinkCandidate {
   path: string;
   title: string;
 }
+
+export type EmbedKind = "file" | "heading" | "block";
+
+export interface EmbedResult {
+  kind: EmbedKind;
+  source_path: string;
+  source_title: string;
+  content: string;
+}

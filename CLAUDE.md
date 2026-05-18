@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 2)
+## Currently implemented (end of Phase 3)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -107,27 +107,39 @@ Commands wired through the handler:
   `create_file`, `delete_file`, `rename_file`
 - `get_backlinks`, `get_outgoing_links`, `get_outline`,
   `list_link_candidates`
+- `resolve_embed` (Phase 3): file / heading-section / `^anchor` block
 
-Frontend surfaces: pick + open vault → tree explorer → CodeMirror editor with
-Ctrl/Cmd-S save → wiki-link decoration with Ctrl/Cmd-click navigation →
-`[[` autocomplete from indexed files → right-side panel showing Outline +
-Backlinks → status bar with indexed file count → live tree refresh on file
-watcher events.
+Frontend surfaces: pick + open vault → tree explorer → editor with three view
+modes (Source / Live Preview / Reading) → `Mod+S` save → wiki-link decoration
+with Ctrl/Cmd-click navigation → `[[` autocomplete → inline `![[…]]` embed
+widgets in Live Preview → fully rendered Reading mode (via `marked`) →
+right-side panel with Outline + Backlinks → status bar with indexed file
+count and current mode → live tree refresh on watcher events.
 
-## Phase 2 internals
+## Phase 2/3 internals
 
 - `core::markdown_parser::extract_blocks` walks pulldown-cmark's offset
   iterator and emits one `ParsedBlock` per top-level Markdown element
   (Paragraph, Heading, BlockQuote, CodeBlock, List, HtmlBlock, Table,
   FootnoteDefinition).
+- `core::markdown_parser::extract_section_by_heading` returns the slice
+  starting at a matched heading and continuing until the next heading at the
+  same or higher level — backs the `![[file#Heading]]` embed.
+- `core::markdown_parser::extract_block_by_user_ref` returns the block whose
+  trailing `^anchor` matches — backs `![[file#^anchor]]`.
 - `core::link_resolver::scan_wiki_links` is a hand-written scanner for
-  `[[target#heading|alias]]` and `[[target#^block-ref|alias]]`.
+  `[[target#heading|alias]]` and `[[target#^block-ref|alias]]`. The `!`
+  prefix is detected and surfaced as `RawWikiLink.is_embed`, which maps to
+  link_type `embed`/`embed_block`/`embed_heading` in the DB.
 - `VaultDb::resolve_link_target` tries exact path with `.md`/`.markdown`,
   then basename match across folders, then case-sensitive title.
 - `VaultDb::reresolve_unresolved_links` reruns resolution every time a file
   is added — links to not-yet-created notes heal automatically.
-- `BlockRow.user_ref` stores trailing `^anchor` markers so transclusion in
-  Phase 3 can target specific blocks.
+- `BlockRow.user_ref` stores trailing `^anchor` markers.
+- Frontend: `lib/embeds.ts` (`scanEmbeds`, `expandEmbeds` with depth cap to
+  break cycles), `lib/markdown.ts` (Marked instance with a custom
+  `wikiLink` tokenizer), `components/editor/ReadingView.tsx`, and
+  `extensions/transclusion.ts` (block widgets after each `![[…]]` line).
 
 ## Roadmap pointer
 
@@ -137,7 +149,7 @@ upcoming phases:
 | Phase | Adds                                           |
 |------:|------------------------------------------------|
 | ✓ 2   | Block UUIDs, wiki-links, backlinks, outline    |
-| 3     | Live preview + transclusion (`![[note#^block]]`) |
+| ✓ 3   | Live preview + transclusion (`![[note#^block]]`) |
 | 4     | Graph view (Pixi.js + Rust force-directed)     |
 | 5     | LanceDB + semantic search                      |
 | 6     | HDC encoder                                    |

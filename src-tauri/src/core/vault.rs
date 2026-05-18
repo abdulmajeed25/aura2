@@ -190,13 +190,15 @@ impl VaultState {
             let source_block_id = block_for_line(&block_id_by_first_line, link.line);
             let (target_file_id, target_block_id) =
                 self.resolve_target(&link.target, link.block_ref.as_deref()).await?;
-            let link_type = if link.block_ref.is_some() {
-                "wiki_block".to_string()
-            } else if link.heading.is_some() {
-                "wiki_heading".to_string()
-            } else {
-                "wiki".to_string()
-            };
+            let link_type = match (link.is_embed, link.block_ref.is_some(), link.heading.is_some()) {
+                (true, true, _) => "embed_block",
+                (true, false, true) => "embed_heading",
+                (true, _, _) => "embed",
+                (false, true, _) => "wiki_block",
+                (false, false, true) => "wiki_heading",
+                (false, _, _) => "wiki",
+            }
+            .to_string();
             to_insert.push(InsertLink {
                 source_block_id,
                 target_file_id,
