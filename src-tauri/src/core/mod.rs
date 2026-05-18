@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod canvas;
 pub mod embeddings;
 pub mod file_watcher;
 pub mod graph_engine;

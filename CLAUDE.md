@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 11)
+## Currently implemented (end of Phase 12)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -123,6 +123,8 @@ Commands wired through the handler:
 - `suggest_links`, `find_orphan_notes`, `apply_link_suggestion`
   (Phase 11): HDC-driven link proposals + orphan detection +
   one-click append-to-source
+- `list_canvases`, `read_canvas`, `write_canvas`, `create_canvas`
+  (Phase 12): infinite-canvas JSON files inside the vault
 
 Frontend surfaces: pick + open vault → tree explorer → editor with view
 modes (Source / Live Preview / Reading / Graph / Global Query) plus Agent
@@ -292,6 +294,28 @@ opens the Search palette.
   multi-turn transcript only displays past Q+A pairs — the actual
   conversational memory lives in the SSM hidden state, fixed-size.
 
+## Phase 12 internals
+
+- `core::canvas::CanvasDoc` is a tagged-enum JSON document (`type:
+  "file" | "text"` for nodes, plus edges with id / fromNode / toNode /
+  optional label). Stored in the vault as `.canvas` files so they
+  travel with the user's data and survive uninstalls (Local-First
+  Absolute).
+- `commands::canvas::{list_canvases, read_canvas, write_canvas,
+  create_canvas}` are thin wrappers that go through
+  `VaultState::resolve` for path safety. `write_canvas` calls
+  `CanvasDoc::validate` to catch dangling edges and duplicate node
+  ids before touching disk.
+- Frontend `components/canvas/InfiniteCanvas.tsx` is Canvas 2D
+  (consistent with Phase 4's GraphView): pan/zoom, drag-to-reposition
+  cards, click-to-open for file cards, "+ File card" / "+ Text card"
+  buttons, save button with dirty indicator. The format is close to
+  Obsidian's so existing `.canvas` files import without migration.
+- Drag-from-tree-to-canvas (the spec's tactile demo) is deferred —
+  the data model and rendering are in place; only the HTML5
+  drag-and-drop wiring between the FileExplorer and InfiniteCanvas
+  remains.
+
 ## Phase 11 internals
 
 - `core::agent::suggestions::compute_suggestions` walks every
@@ -451,5 +475,5 @@ upcoming phases:
 | ✓ 9   | Local-media ingestion (byte+desc stand-in; ONNX/yt-dlp swap pending) |
 | ✓ 10  | MCP HTTP server (Control Port WS deferred)     |
 | ✓ 11  | Agent workspace (HDC link suggestions + orphans; full undo deferred) |
-| 12    | Infinite canvas                                |
+| ✓ 12  | Infinite canvas (Canvas-2D, drag-from-tree deferred) |
 | 13    | Polish + signing + distribution                |

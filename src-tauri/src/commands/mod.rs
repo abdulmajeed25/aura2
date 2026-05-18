@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod block;
+pub mod canvas;
 pub mod file;
 pub mod graph;
 pub mod graph_rag;

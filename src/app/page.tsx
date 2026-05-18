@@ -8,6 +8,7 @@ import {
   Eye,
   Film,
   FolderOpen,
+  Layers,
   Network,
   PenLine,
   Plug,
@@ -19,6 +20,7 @@ import { scanMedia } from "@/lib/tauri/media";
 import { Integrations } from "@/components/settings/Integrations";
 import { AIChat } from "@/components/ai/AIChat";
 import { AgentWorkspace } from "@/components/ai/AgentWorkspace";
+import { InfiniteCanvas } from "@/components/canvas/InfiniteCanvas";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
 import { GraphView } from "@/components/graph/GraphView";
@@ -39,6 +41,7 @@ type ViewMode =
   | "graph"
   | "ai"
   | "agent"
+  | "canvas"
   | "integrations";
 
 export default function HomePage() {
@@ -218,6 +221,20 @@ export default function HomePage() {
             </button>
             <button
               type="button"
+              onClick={() => setMode((m) => (m === "canvas" ? "live" : "canvas"))}
+              className={
+                "w-full inline-flex items-center gap-2 px-3 py-1.5 rounded text-[12px] " +
+                (mode === "canvas"
+                  ? "bg-[var(--color-surface-hover)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface-hover)]")
+              }
+              title="Infinite canvas boards"
+            >
+              <Layers size={13} />
+              Canvas
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 setMode((m) => (m === "integrations" ? "live" : "integrations"))
               }
@@ -241,6 +258,8 @@ export default function HomePage() {
             <AIChat />
           ) : mode === "agent" ? (
             <AgentWorkspace />
+          ) : mode === "canvas" ? (
+            <InfiniteCanvas />
           ) : mode === "integrations" ? (
             <Integrations />
           ) : activePath ? (
@@ -399,7 +418,9 @@ function StatusBar({
               ? "Global Query"
               : mode === "agent"
                 ? "Agent"
-                : "Integrations";
+                : mode === "canvas"
+                  ? "Canvas"
+                  : "Integrations";
   return (
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>

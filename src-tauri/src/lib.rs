@@ -74,6 +74,10 @@ pub fn run() {
             commands::agent::suggest_links,
             commands::agent::find_orphan_notes,
             commands::agent::apply_link_suggestion,
+            commands::canvas::list_canvases,
+            commands::canvas::read_canvas,
+            commands::canvas::write_canvas,
+            commands::canvas::create_canvas,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

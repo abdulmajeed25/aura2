@@ -200,6 +200,44 @@ export interface ApplyReport {
   appended: string;
 }
 
+export type CanvasNode =
+  | {
+      type: "file";
+      id: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      file: string;
+    }
+  | {
+      type: "text";
+      id: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+    };
+
+export interface CanvasEdge {
+  id: string;
+  fromNode: string;
+  toNode: string;
+  label?: string | null;
+}
+
+export interface CanvasDoc {
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+}
+
+export interface CanvasFile {
+  path: string;
+  name: string;
+  modified_at: number;
+}
+
 export interface McpStatus {
   running: boolean;
   url: string | null;
