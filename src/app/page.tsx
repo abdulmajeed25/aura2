@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Eye,
   FolderOpen,
+  Network,
   PenLine,
   RefreshCw,
   Save,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
+import { GraphView } from "@/components/graph/GraphView";
 import { FileExplorer } from "@/components/sidebar/FileExplorer";
 import { Backlinks } from "@/components/sidebar/Backlinks";
 import { Outline } from "@/components/sidebar/Outline";
@@ -20,7 +22,7 @@ import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
 import type { VaultChangeEvent } from "@/types/vault";
 
-type ViewMode = "source" | "live" | "reading";
+type ViewMode = "source" | "live" | "reading" | "graph";
 
 export default function HomePage() {
   const { info, tree, loading, error, pickAndOpen, refreshTree } =
@@ -104,9 +106,27 @@ export default function HomePage() {
           <div className="flex-1 overflow-auto pb-4">
             {tree && <FileExplorer tree={tree} />}
           </div>
+          <div className="border-t border-[var(--color-border)] p-2">
+            <button
+              type="button"
+              onClick={() => setMode((m) => (m === "graph" ? "live" : "graph"))}
+              className={
+                "w-full inline-flex items-center gap-2 px-3 py-1.5 rounded text-[12px] " +
+                (mode === "graph"
+                  ? "bg-[var(--color-surface-hover)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface-hover)]")
+              }
+              title="Toggle graph view"
+            >
+              <Network size={13} />
+              Graph view
+            </button>
+          </div>
         </aside>
         <main className="flex-1 min-w-0 flex flex-col bg-[var(--color-bg)]">
-          {activePath ? (
+          {mode === "graph" ? (
+            <GraphView />
+          ) : activePath ? (
             <>
               <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)]">
                 <span className="truncate">{activePath}</span>
@@ -240,7 +260,13 @@ function StatusBar({ mode }: { mode: ViewMode }) {
   const info = useVaultStore((s) => s.info);
   const activePath = useEditorStore((s) => s.activePath);
   const modeLabel =
-    mode === "source" ? "Source" : mode === "live" ? "Live Preview" : "Reading";
+    mode === "source"
+      ? "Source"
+      : mode === "live"
+        ? "Live Preview"
+        : mode === "reading"
+          ? "Reading"
+          : "Graph";
   return (
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>

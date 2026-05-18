@@ -393,6 +393,41 @@ impl VaultDb {
         Ok(out)
     }
 
+    /// Return `(nodes, edges)` where `nodes` are `(file_id, path, title)` tuples
+    /// and `edges` are `(source_file_id, target_file_id)` pairs for every
+    /// resolved link in the vault.
+    pub async fn fetch_graph_nodes_and_edges(
+        &self,
+    ) -> Result<(Vec<(String, String, String)>, Vec<(String, String)>)> {
+        let mut node_rows = self
+            .conn
+            .query("SELECT id, path, title FROM files", ())
+            .await?;
+        let mut nodes = Vec::new();
+        while let Some(row) = node_rows.next().await? {
+            nodes.push((
+                row.get::<String>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+            ));
+        }
+
+        let mut edge_rows = self
+            .conn
+            .query(
+                "SELECT source_file_id, target_file_id
+                 FROM links
+                 WHERE is_resolved = 1 AND target_file_id IS NOT NULL",
+                (),
+            )
+            .await?;
+        let mut edges = Vec::new();
+        while let Some(row) = edge_rows.next().await? {
+            edges.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        Ok((nodes, edges))
+    }
+
     /// All files in the vault, used as autocomplete candidates for `[[`.
     pub async fn list_link_candidates(&self) -> Result<Vec<LinkCandidate>> {
         let mut rows = self

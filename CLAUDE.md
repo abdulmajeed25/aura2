@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 3)
+## Currently implemented (end of Phase 4)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -107,12 +107,14 @@ Commands wired through the handler:
   `create_file`, `delete_file`, `rename_file`
 - `get_backlinks`, `get_outgoing_links`, `get_outline`,
   `list_link_candidates`
-- `resolve_embed` (Phase 3): file / heading-section / `^anchor` block
+- `resolve_embed`: file / heading-section / `^anchor` block
+- `get_graph_snapshot` (Phase 4): returns positioned `GraphNode`s + edges
 
-Frontend surfaces: pick + open vault → tree explorer → editor with three view
-modes (Source / Live Preview / Reading) → `Mod+S` save → wiki-link decoration
-with Ctrl/Cmd-click navigation → `[[` autocomplete → inline `![[…]]` embed
-widgets in Live Preview → fully rendered Reading mode (via `marked`) →
+Frontend surfaces: pick + open vault → tree explorer → editor with four view
+modes (Source / Live Preview / Reading / Graph) → `Mod+S` save → wiki-link
+decoration with Ctrl/Cmd-click navigation → `[[` autocomplete → inline
+`![[…]]` embed widgets in Live Preview → fully rendered Reading mode (via
+`marked`) → interactive Canvas-2D graph with pan/zoom/filter/click-to-open →
 right-side panel with Outline + Backlinks → status bar with indexed file
 count and current mode → live tree refresh on watcher events.
 
@@ -141,6 +143,24 @@ count and current mode → live tree refresh on watcher events.
   `wikiLink` tokenizer), `components/editor/ReadingView.tsx`, and
   `extensions/transclusion.ts` (block widgets after each `![[…]]` line).
 
+## Phase 4 internals
+
+- `core::graph_engine::compute_graph` runs Fruchterman-Reingold over every
+  resolved link, parallelising the all-pairs repulsive step with `rayon`.
+  O(n²) per iteration; fine for ≤ a few thousand notes. A Barnes-Hut
+  quadtree is the natural drop-in for ≥10k nodes — the `layout` function
+  is the single place to swap.
+- `LayoutParams` is deterministic via `ChaCha8Rng` seed so reloading the
+  same vault produces the same layout (no jitter in the UI).
+- `VaultDb::fetch_graph_nodes_and_edges` only returns resolved edges
+  (`is_resolved = 1 AND target_file_id IS NOT NULL`) so orphan links don't
+  pollute the graph.
+- Frontend `components/graph/GraphView.tsx` is plain Canvas 2D with manual
+  hit-testing, pan/zoom, and a filter input. Clicks on a node call
+  `editorStore.openFile`. The Pixi.js dependency the master spec lists is
+  deferred — Canvas 2D handles typical vault sizes (≤ ~2k nodes) at 60 FPS
+  and keeps the bundle small.
+
 ## Roadmap pointer
 
 Full multi-phase plan lives in the master spec (Arabic). Quick recap of
@@ -150,7 +170,7 @@ upcoming phases:
 |------:|------------------------------------------------|
 | ✓ 2   | Block UUIDs, wiki-links, backlinks, outline    |
 | ✓ 3   | Live preview + transclusion (`![[note#^block]]`) |
-| 4     | Graph view (Pixi.js + Rust force-directed)     |
+| ✓ 4   | Graph view (Canvas 2D + Rust force-directed)   |
 | 5     | LanceDB + semantic search                      |
 | 6     | HDC encoder                                    |
 | 7     | GraphRAG (Leiden + hierarchical summaries)     |

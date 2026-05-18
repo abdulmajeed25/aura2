@@ -74,3 +74,23 @@ export interface EmbedResult {
   source_title: string;
   content: string;
 }
+
+export interface GraphNode {
+  id: string;
+  path: string;
+  title: string;
+  x: number;
+  y: number;
+  degree: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface GraphSnapshot {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  iterations: number;
+}

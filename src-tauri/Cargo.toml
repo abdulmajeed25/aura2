@@ -44,6 +44,11 @@ chrono = { version = "0.4", features = ["serde"] }
 # Concurrency primitives
 dashmap = "6.1"
 parking_lot = "0.12"
+rayon = "1.10"
+
+# Random
+rand = "0.8"
+rand_chacha = "0.3"
 
 # Error handling & logging
 anyhow = "1"

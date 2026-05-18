@@ -47,6 +47,7 @@ pub fn run() {
             commands::link::get_outline,
             commands::link::list_link_candidates,
             commands::block::resolve_embed,
+            commands::graph::get_graph_snapshot,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");
