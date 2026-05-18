@@ -14,6 +14,7 @@ import {
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
 import { GraphView } from "@/components/graph/GraphView";
+import { SearchPalette } from "@/components/search/SearchPalette";
 import { FileExplorer } from "@/components/sidebar/FileExplorer";
 import { Backlinks } from "@/components/sidebar/Backlinks";
 import { Outline } from "@/components/sidebar/Outline";
@@ -30,6 +31,21 @@ export default function HomePage() {
   const { activePath, content, dirty, saving, save } = useEditorStore();
   const [refreshKey, setRefreshKey] = useState(0);
   const [mode, setMode] = useState<ViewMode>("live");
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && (e.key === "F" || e.key === "f")) {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (e.key === "Escape" && searchOpen) {
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [searchOpen]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -177,7 +193,8 @@ export default function HomePage() {
           )}
         </aside>
       </div>
-      <StatusBar mode={mode} />
+      <StatusBar mode={mode} onSearchClick={() => setSearchOpen(true)} />
+      <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }
@@ -256,7 +273,13 @@ function TopBar() {
   );
 }
 
-function StatusBar({ mode }: { mode: ViewMode }) {
+function StatusBar({
+  mode,
+  onSearchClick,
+}: {
+  mode: ViewMode;
+  onSearchClick: () => void;
+}) {
   const info = useVaultStore((s) => s.info);
   const activePath = useEditorStore((s) => s.activePath);
   const modeLabel =
@@ -271,7 +294,15 @@ function StatusBar({ mode }: { mode: ViewMode }) {
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>
       {activePath && <span className="truncate">{activePath}</span>}
-      <span className="ml-auto">{modeLabel}</span>
+      <button
+        type="button"
+        onClick={onSearchClick}
+        className="ml-auto inline-flex items-center gap-1 hover:text-[var(--color-text)]"
+        title="Search (Ctrl/Cmd+Shift+F)"
+      >
+        Search · ⇧⌘F
+      </button>
+      <span>{modeLabel}</span>
     </footer>
   );
 }

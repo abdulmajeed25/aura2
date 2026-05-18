@@ -94,3 +94,17 @@ export interface GraphSnapshot {
   edges: GraphEdge[];
   iterations: number;
 }
+
+export type SearchMode = "semantic" | "fts" | "hybrid";
+
+export interface SearchHit {
+  block_id: string;
+  file_id: string;
+  file_path: string;
+  file_title: string;
+  block_type: string;
+  line_number: number;
+  score: number;
+  snippet: string;
+  matched_via: "semantic" | "fts" | "both";
+}

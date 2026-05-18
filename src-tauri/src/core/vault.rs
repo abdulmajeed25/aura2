@@ -6,6 +6,7 @@ use chrono::Utc;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
+use crate::core::embeddings::{embedding_to_bytes, HashEmbedder, TextEncoder};
 use crate::core::link_resolver::scan_wiki_links;
 use crate::core::markdown_parser::parse_document;
 use crate::db::schemas::{BlockRow, FileRow};
@@ -174,6 +175,19 @@ impl VaultState {
             })
             .collect();
         self.db.replace_blocks_for_file(&file_id, &blocks).await?;
+
+        // Generate embeddings for each block and write them to the search index.
+        let encoder = HashEmbedder::new();
+        let embedding_rows: Vec<(String, Vec<u8>, String)> = blocks
+            .iter()
+            .map(|b| {
+                let vec = encoder.encode(&b.content);
+                (b.id.clone(), embedding_to_bytes(&vec), b.content_hash.clone())
+            })
+            .collect();
+        self.db
+            .replace_block_embeddings_for_file(&file_id, &embedding_rows)
+            .await?;
 
         // Build map from line_number → block_id for source_block_id resolution.
         let mut block_id_by_first_line: Vec<(u32, String)> = parsed

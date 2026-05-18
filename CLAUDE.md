@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 4)
+## Currently implemented (end of Phase 5)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -108,7 +108,8 @@ Commands wired through the handler:
 - `get_backlinks`, `get_outgoing_links`, `get_outline`,
   `list_link_candidates`
 - `resolve_embed`: file / heading-section / `^anchor` block
-- `get_graph_snapshot` (Phase 4): returns positioned `GraphNode`s + edges
+- `get_graph_snapshot`: positioned `GraphNode`s + edges
+- `search_vault` (Phase 5): semantic / FTS / hybrid block search
 
 Frontend surfaces: pick + open vault → tree explorer → editor with four view
 modes (Source / Live Preview / Reading / Graph) → `Mod+S` save → wiki-link
@@ -116,7 +117,9 @@ decoration with Ctrl/Cmd-click navigation → `[[` autocomplete → inline
 `![[…]]` embed widgets in Live Preview → fully rendered Reading mode (via
 `marked`) → interactive Canvas-2D graph with pan/zoom/filter/click-to-open →
 right-side panel with Outline + Backlinks → status bar with indexed file
-count and current mode → live tree refresh on watcher events.
+count and current mode → live tree refresh on watcher events → `⇧⌘F` opens
+the Search palette (hybrid / semantic / fts modes, debounced, arrow-key
+navigation, ↵ to open).
 
 ## Phase 2/3 internals
 
@@ -161,6 +164,40 @@ count and current mode → live tree refresh on watcher events.
   deferred — Canvas 2D handles typical vault sizes (≤ ~2k nodes) at 60 FPS
   and keeps the bundle small.
 
+## Phase 5 internals
+
+- Migration 003 adds `block_embeddings` (block_id → blob+dim+content_hash)
+  and a `blocks_fts` FTS5 virtual table backing the keyword search.
+- `core::embeddings::HashEmbedder` is a 384-dim feature-hashed encoder
+  over unigrams + bigrams (FNV-1a hash for sign+index, L2-normalised).
+  It implements the `TextEncoder` trait; swapping in an ONNX-backed
+  `all-MiniLM-L6-v2` later changes one file. We use 384 dims so the
+  schema doesn't need to migrate when that swap happens.
+- `core::search` exposes three modes:
+  - `Semantic`: encode query → cosine similarity vs every stored
+    embedding (parallel `rayon`).
+  - `Fts`: SQLite FTS5 `MATCH` with `bm25` ordering. Query tokens are
+    escaped and prefix-matched (`"term"*`) with implicit AND.
+  - `Hybrid`: reciprocal rank fusion (`1/(k+rank)`) over the FTS and
+    semantic result lists; `k=60`.
+- `VaultState::index_one` now writes embeddings + FTS rows alongside
+  blocks, so a single index pass keeps three tables in sync.
+- Frontend: `components/search/SearchPalette.tsx` debounces typing,
+  exposes a hybrid/semantic/fts toggle, and supports arrow-key
+  navigation + ↵ to open. Bound to `Ctrl/Cmd+Shift+F`.
+
+### Real-MiniLM swap checklist
+
+The Hash embedder is a stand-in. When a real ONNX `all-MiniLM-L6-v2`
+becomes available, the swap is mechanical:
+1. Add `ort` + `tokenizers` to `Cargo.toml`.
+2. Create `core::embeddings::OnnxMiniLmEncoder` implementing
+   `TextEncoder` with dim=384.
+3. Replace `HashEmbedder::new()` references in `core::vault` and
+   `core::search` with the new encoder.
+4. Run `reindex_vault` to repopulate `block_embeddings`.
+5. No schema change is required.
+
 ## Roadmap pointer
 
 Full multi-phase plan lives in the master spec (Arabic). Quick recap of
@@ -171,7 +208,7 @@ upcoming phases:
 | ✓ 2   | Block UUIDs, wiki-links, backlinks, outline    |
 | ✓ 3   | Live preview + transclusion (`![[note#^block]]`) |
 | ✓ 4   | Graph view (Canvas 2D + Rust force-directed)   |
-| 5     | LanceDB + semantic search                      |
+| ✓ 5   | FTS5 + hash-feature semantic search (ONNX swap pending) |
 | 6     | HDC encoder                                    |
 | 7     | GraphRAG (Leiden + hierarchical summaries)     |
 | 8     | SSM/Mamba streaming                            |

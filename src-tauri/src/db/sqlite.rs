@@ -15,6 +15,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_blocks_links",
         include_str!("migrations/002_blocks_links.sql"),
     ),
+    ("003_search", include_str!("migrations/003_search.sql")),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -161,12 +162,23 @@ impl VaultDb {
         file_id: &str,
         blocks: &[BlockRow],
     ) -> Result<()> {
+        // Drop the old blocks AND the corresponding FTS5 rows so the search
+        // index doesn't carry stale content.
         self.conn
             .execute(
                 "DELETE FROM blocks WHERE file_id = ?1",
                 libsql::params![file_id.to_string()],
             )
             .await?;
+        // blocks_fts might not exist if migration 003 hasn't run yet (e.g.
+        // when a 002-era DB is being upgraded). Tolerate the miss.
+        let _ = self
+            .conn
+            .execute(
+                "DELETE FROM blocks_fts WHERE file_id = ?1",
+                libsql::params![file_id.to_string()],
+            )
+            .await;
 
         for b in blocks {
             self.conn
@@ -193,8 +205,125 @@ impl VaultDb {
                     ],
                 )
                 .await?;
+
+            let _ = self
+                .conn
+                .execute(
+                    "INSERT INTO blocks_fts (content, block_id, file_id)
+                     VALUES (?1, ?2, ?3)",
+                    libsql::params![b.content.clone(), b.id.clone(), b.file_id.clone()],
+                )
+                .await;
         }
         Ok(())
+    }
+
+    /// Insert or replace the embedding rows for a file. `items` is `(block_id,
+    /// embedding_bytes, content_hash)`.
+    pub async fn replace_block_embeddings_for_file(
+        &self,
+        file_id: &str,
+        items: &[(String, Vec<u8>, String)],
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM block_embeddings WHERE file_id = ?1",
+                libsql::params![file_id.to_string()],
+            )
+            .await?;
+        let now = chrono::Utc::now().timestamp_millis();
+        for (block_id, bytes, hash) in items {
+            self.conn
+                .execute(
+                    "INSERT INTO block_embeddings
+                        (block_id, file_id, dim, embedding, content_hash, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    libsql::params![
+                        block_id.clone(),
+                        file_id.to_string(),
+                        crate::core::embeddings::EMBED_DIM as i64,
+                        bytes.clone(),
+                        hash.clone(),
+                        now,
+                    ],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Stream every block embedding joined with the metadata callers need to
+    /// render a search hit.
+    pub async fn all_block_embeddings_with_meta(
+        &self,
+    ) -> Result<Vec<(crate::core::search::BlockMeta, Vec<f32>)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT be.block_id, be.file_id, f.path, f.title,
+                        b.block_type, b.line_number, b.content, be.embedding
+                 FROM block_embeddings be
+                 JOIN blocks b ON b.id = be.block_id
+                 JOIN files  f ON f.id = be.file_id",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let bytes: Vec<u8> = row.get(7)?;
+            let emb = crate::core::embeddings::bytes_to_embedding(&bytes);
+            out.push((
+                crate::core::search::BlockMeta {
+                    block_id: row.get::<String>(0)?,
+                    file_id: row.get::<String>(1)?,
+                    file_path: row.get::<String>(2)?,
+                    file_title: row.get::<String>(3)?,
+                    block_type: row.get::<String>(4)?,
+                    line_number: row.get::<i64>(5)?,
+                    content: row.get::<String>(6)?,
+                },
+                emb,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// FTS5 full-text search returning `(meta, bm25_score)`. Lower bm25 is better.
+    pub async fn fts_search(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<(crate::core::search::BlockMeta, f32)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT b.id, b.file_id, f.path, f.title, b.block_type,
+                        b.line_number, b.content, bm25(blocks_fts)
+                 FROM blocks_fts
+                 JOIN blocks b ON b.id = blocks_fts.block_id
+                 JOIN files  f ON f.id = b.file_id
+                 WHERE blocks_fts MATCH ?1
+                 ORDER BY bm25(blocks_fts)
+                 LIMIT ?2",
+                libsql::params![fts_query_for(query), limit],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push((
+                crate::core::search::BlockMeta {
+                    block_id: row.get::<String>(0)?,
+                    file_id: row.get::<String>(1)?,
+                    file_path: row.get::<String>(2)?,
+                    file_title: row.get::<String>(3)?,
+                    block_type: row.get::<String>(4)?,
+                    line_number: row.get::<i64>(5)?,
+                    content: row.get::<String>(6)?,
+                },
+                row.get::<f64>(7)? as f32,
+            ));
+        }
+        Ok(out)
     }
 
     pub async fn get_block_by_user_ref(
@@ -520,6 +649,21 @@ pub struct InsertLink {
     pub link_type: String,
     pub line_number: i64,
     pub column_number: i64,
+}
+
+/// Build an FTS5 MATCH expression from a free-text user query: each
+/// alphanumeric token is double-quoted and prefix-matched, joined by implicit AND.
+fn fts_query_for(q: &str) -> String {
+    q.split_whitespace()
+        .map(|t| {
+            t.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("\"{}\"*", s))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn file_row_from(row: &libsql::Row) -> Result<FileRow> {
