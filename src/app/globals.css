@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #14141b;
+  --color-surface-hover: #1c1c26;
+  --color-border: #26262f;
+  --color-text: #e4e4e7;
+  --color-text-dim: #a1a1aa;
+  --color-text-faint: #71717a;
+  --color-accent: #818cf8;
+  --color-accent-hover: #a5b4fc;
+  --font-mono: ui-monospace, "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html,
+body,
+#__next {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a45;
+}
+
+.cm-editor {
+  height: 100%;
+  font-size: 15px;
+  font-family: var(--font-mono);
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-content {
+  padding: 24px 28px 80px 28px;
+  line-height: 1.7;
+  caret-color: var(--color-accent);
+}
+.cm-gutters {
+  background: transparent;
+  border: none;
+  color: var(--color-text-faint);
+}
+.cm-activeLine,
+.cm-activeLineGutter {
+  background: rgba(129, 140, 248, 0.05);
+}

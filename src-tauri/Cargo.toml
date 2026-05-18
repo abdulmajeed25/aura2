@@ -1,0 +1,63 @@
+[package]
+name = "aura"
+version = "0.1.0"
+description = "Aura Knowledge Engine"
+authors = ["Aura"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "aura_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Filesystem monitoring
+notify = "6.1"
+notify-debouncer-full = "0.3"
+ignore = "0.4"
+
+# Markdown
+pulldown-cmark = { version = "0.12", default-features = false }
+
+# Database
+libsql = { version = "0.6", default-features = false, features = ["core"] }
+
+# Identifiers, hashing, time
+uuid = { version = "1.10", features = ["v7"] }
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Concurrency primitives
+dashmap = "6.1"
+parking_lot = "0.12"
+
+# Error handling & logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# default Tauri custom-protocol feature for production builds
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
