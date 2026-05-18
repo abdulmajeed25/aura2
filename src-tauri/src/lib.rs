@@ -42,6 +42,10 @@ pub fn run() {
             commands::file::delete_file,
             commands::file::rename_file,
             commands::file::file_tree,
+            commands::link::get_backlinks,
+            commands::link::get_outgoing_links,
+            commands::link::get_outline,
+            commands::link::list_link_candidates,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

@@ -68,3 +68,28 @@ body,
 .cm-activeLineGutter {
   background: rgba(129, 140, 248, 0.05);
 }
+.cm-wiki-link {
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(129, 140, 248, 0.4);
+  text-underline-offset: 3px;
+}
+.cm-wiki-link:hover {
+  color: var(--color-accent-hover);
+}
+.cm-wiki-link-unresolved {
+  color: #f59e0b;
+  text-decoration-style: dotted;
+  text-decoration-color: rgba(245, 158, 11, 0.6);
+}
+.cm-tooltip-autocomplete {
+  background: var(--color-surface) !important;
+  border: 1px solid var(--color-border) !important;
+  color: var(--color-text) !important;
+  font-family: var(--font-sans) !important;
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--color-surface-hover) !important;
+  color: var(--color-accent) !important;
+}

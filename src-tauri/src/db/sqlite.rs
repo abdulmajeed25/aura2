@@ -4,10 +4,18 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use libsql::{Builder, Connection, Database};
 
-use crate::db::schemas::FileRow;
+use crate::db::schemas::{
+    BacklinkEntry, BlockRow, FileRow, LinkCandidate, OutgoingLinkEntry,
+};
 
 /// Embedded migration files. Order matters; they run in array order.
-const MIGRATIONS: &[(&str, &str)] = &[("001_initial", include_str!("migrations/001_initial.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_initial", include_str!("migrations/001_initial.sql")),
+    (
+        "002_blocks_links",
+        include_str!("migrations/002_blocks_links.sql"),
+    ),
+];
 
 /// Wrapper around a libsql connection scoped to a single vault.
 pub struct VaultDb {
@@ -16,7 +24,6 @@ pub struct VaultDb {
 }
 
 impl VaultDb {
-    /// Open or create the on-disk SQLite database living inside the vault's `.aura/` folder.
     pub async fn open(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
@@ -27,6 +34,7 @@ impl VaultDb {
             .await
             .with_context(|| format!("opening libsql db at {}", db_path.display()))?;
         let conn = db.connect()?;
+        conn.execute("PRAGMA foreign_keys = ON", ()).await?;
 
         let mut this = Self { _db: db, conn };
         this.run_migrations().await?;
@@ -68,7 +76,6 @@ impl VaultDb {
         Ok(())
     }
 
-    /// Upsert a file row keyed on its vault-relative path.
     pub async fn upsert_file(&self, row: &FileRow) -> Result<()> {
         self.conn
             .execute(
@@ -101,7 +108,6 @@ impl VaultDb {
         Ok(())
     }
 
-    /// Remove a file row by vault-relative path.
     pub async fn delete_file_by_path(&self, path: &str) -> Result<()> {
         self.conn
             .execute(
@@ -112,7 +118,6 @@ impl VaultDb {
         Ok(())
     }
 
-    /// Look up a file row by vault-relative path.
     pub async fn get_file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
         let mut rows = self
             .conn
@@ -141,7 +146,6 @@ impl VaultDb {
         }
     }
 
-    /// Count indexed files. Used in basic status queries.
     pub async fn count_files(&self) -> Result<i64> {
         let mut rows = self.conn.query("SELECT COUNT(*) FROM files", ()).await?;
         match rows.next().await? {
@@ -149,4 +153,351 @@ impl VaultDb {
             None => Ok(0),
         }
     }
+
+    // ─── Blocks ───────────────────────────────────────────────────────────
+
+    pub async fn replace_blocks_for_file(
+        &self,
+        file_id: &str,
+        blocks: &[BlockRow],
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM blocks WHERE file_id = ?1",
+                libsql::params![file_id.to_string()],
+            )
+            .await?;
+
+        for b in blocks {
+            self.conn
+                .execute(
+                    "INSERT INTO blocks (
+                        id, file_id, parent_id, order_index, block_type, level,
+                        content, content_hash, line_number, user_ref, metadata,
+                        created_at, modified_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    libsql::params![
+                        b.id.clone(),
+                        b.file_id.clone(),
+                        b.parent_id.clone(),
+                        b.order_index,
+                        b.block_type.clone(),
+                        b.level,
+                        b.content.clone(),
+                        b.content_hash.clone(),
+                        b.line_number,
+                        b.user_ref.clone(),
+                        b.metadata.clone(),
+                        b.created_at,
+                        b.modified_at,
+                    ],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_block_by_user_ref(
+        &self,
+        file_id: &str,
+        user_ref: &str,
+    ) -> Result<Option<String>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id FROM blocks WHERE file_id = ?1 AND user_ref = ?2 LIMIT 1",
+                libsql::params![file_id.to_string(), user_ref.to_string()],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get::<String>(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // ─── Links ────────────────────────────────────────────────────────────
+
+    pub async fn replace_links_for_file(
+        &self,
+        source_file_id: &str,
+        rows: &[InsertLink],
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM links WHERE source_file_id = ?1",
+                libsql::params![source_file_id.to_string()],
+            )
+            .await?;
+
+        let now = Utc::now().timestamp_millis();
+        for l in rows {
+            self.conn
+                .execute(
+                    "INSERT INTO links (
+                        source_file_id, source_block_id, target_file_id, target_block_id,
+                        target_heading, target_block_ref, link_text, display_text,
+                        link_type, line_number, column_number, is_resolved, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    libsql::params![
+                        source_file_id.to_string(),
+                        l.source_block_id.clone(),
+                        l.target_file_id.clone(),
+                        l.target_block_id.clone(),
+                        l.target_heading.clone(),
+                        l.target_block_ref.clone(),
+                        l.link_text.clone(),
+                        l.display_text.clone(),
+                        l.link_type.clone(),
+                        l.line_number,
+                        l.column_number,
+                        if l.target_file_id.is_some() { 1i64 } else { 0i64 },
+                        now,
+                    ],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve a `[[target]]` string to a file row by trying, in order:
+    /// 1. Exact vault-relative path with `.md`/`.markdown` extension.
+    /// 2. Basename match (filename without extension), any folder.
+    /// 3. Case-sensitive title match.
+    pub async fn resolve_link_target(&self, target: &str) -> Result<Option<FileRow>> {
+        if target.is_empty() {
+            return Ok(None);
+        }
+
+        let lower = target.to_ascii_lowercase();
+        let already_md = lower.ends_with(".md") || lower.ends_with(".markdown");
+
+        let candidates: Vec<String> = if already_md {
+            vec![target.to_string()]
+        } else {
+            vec![format!("{}.md", target), format!("{}.markdown", target)]
+        };
+        for path in &candidates {
+            if let Some(row) = self.get_file_by_path(path).await? {
+                return Ok(Some(row));
+            }
+        }
+
+        let basename = target.rsplit('/').next().unwrap_or(target);
+        let basename_md = format!("/{}.md", basename);
+        let basename_markdown = format!("/{}.markdown", basename);
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, path, title, content_hash, size_bytes, word_count,
+                        created_at, modified_at, indexed_at, frontmatter
+                 FROM files
+                 WHERE path = ?1 OR path = ?2
+                       OR path LIKE ?3 OR path LIKE ?4
+                 LIMIT 1",
+                libsql::params![
+                    format!("{}.md", basename),
+                    format!("{}.markdown", basename),
+                    format!("%{}", basename_md),
+                    format!("%{}", basename_markdown),
+                ],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            return Ok(Some(file_row_from(&row)?));
+        }
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, path, title, content_hash, size_bytes, word_count,
+                        created_at, modified_at, indexed_at, frontmatter
+                 FROM files WHERE title = ?1 LIMIT 1",
+                libsql::params![target.to_string()],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            return Ok(Some(file_row_from(&row)?));
+        }
+
+        Ok(None)
+    }
+
+    /// Backlinks for the file at `target_path`: every link whose target_file_id
+    /// points at this file.
+    pub async fn get_backlinks(&self, target_path: &str) -> Result<Vec<BacklinkEntry>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT l.source_file_id, sf.path, sf.title, l.link_text,
+                        l.display_text, l.line_number, b.content
+                 FROM links l
+                 JOIN files sf ON sf.id = l.source_file_id
+                 JOIN files tf ON tf.id = l.target_file_id
+                 LEFT JOIN blocks b ON b.id = l.source_block_id
+                 WHERE tf.path = ?1
+                 ORDER BY sf.path, l.line_number",
+                libsql::params![target_path.to_string()],
+            )
+            .await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(BacklinkEntry {
+                source_file_id: row.get::<String>(0)?,
+                source_path: row.get::<String>(1)?,
+                source_title: row.get::<String>(2)?,
+                link_text: row.get::<String>(3)?,
+                display_text: row.get::<Option<String>>(4)?,
+                line_number: row.get::<i64>(5)?,
+                context: row.get::<Option<String>>(6)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Outgoing links from the file at `source_path`, joined with target info.
+    pub async fn get_outgoing_links(
+        &self,
+        source_path: &str,
+    ) -> Result<Vec<OutgoingLinkEntry>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT l.link_text, l.display_text, tf.path, tf.title,
+                        l.target_heading, l.target_block_ref,
+                        l.line_number, l.column_number, l.is_resolved
+                 FROM links l
+                 JOIN files sf ON sf.id = l.source_file_id
+                 LEFT JOIN files tf ON tf.id = l.target_file_id
+                 WHERE sf.path = ?1
+                 ORDER BY l.line_number, l.column_number",
+                libsql::params![source_path.to_string()],
+            )
+            .await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(OutgoingLinkEntry {
+                link_text: row.get::<String>(0)?,
+                display_text: row.get::<Option<String>>(1)?,
+                target_path: row.get::<Option<String>>(2)?,
+                target_title: row.get::<Option<String>>(3)?,
+                target_heading: row.get::<Option<String>>(4)?,
+                target_block_ref: row.get::<Option<String>>(5)?,
+                line_number: row.get::<i64>(6)?,
+                column_number: row.get::<i64>(7)?,
+                is_resolved: row.get::<i64>(8)? != 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// All files in the vault, used as autocomplete candidates for `[[`.
+    pub async fn list_link_candidates(&self) -> Result<Vec<LinkCandidate>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT path, title FROM files ORDER BY modified_at DESC",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(LinkCandidate {
+                path: row.get::<String>(0)?,
+                title: row.get::<String>(1)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// After a file is added or renamed, walk through every unresolved link
+    /// and try to resolve it against the current `files` table.
+    pub async fn reresolve_unresolved_links(&self) -> Result<u32> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT l.id, l.link_text, l.target_heading, l.target_block_ref
+                 FROM links l
+                 WHERE l.is_resolved = 0",
+                (),
+            )
+            .await?;
+        // Collect first because we'll mutate the table during iteration.
+        let mut pending: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            pending.push((
+                row.get::<i64>(0)?,
+                row.get::<String>(1)?,
+                row.get::<Option<String>>(2)?,
+                row.get::<Option<String>>(3)?,
+            ));
+        }
+
+        let mut healed = 0u32;
+        for (link_id, link_text, _heading, block_ref) in pending {
+            // link_text is the raw `[[...]]`; extract the target portion the
+            // same way the parser does.
+            let inner = link_text
+                .strip_prefix("[[")
+                .and_then(|s| s.strip_suffix("]]"))
+                .unwrap_or(&link_text);
+            let lhs = inner.split('|').next().unwrap_or(inner);
+            let file_part = lhs.split('#').next().unwrap_or(lhs).trim();
+            let Some(target_file) = self.resolve_link_target(file_part).await? else {
+                continue;
+            };
+
+            let target_block_id = if let Some(b) = &block_ref {
+                self.get_block_by_user_ref(&target_file.id, b).await?
+            } else {
+                None
+            };
+
+            self.conn
+                .execute(
+                    "UPDATE links
+                     SET target_file_id = ?1, target_block_id = ?2, is_resolved = 1
+                     WHERE id = ?3",
+                    libsql::params![
+                        target_file.id.clone(),
+                        target_block_id,
+                        link_id,
+                    ],
+                )
+                .await?;
+            healed += 1;
+        }
+        Ok(healed)
+    }
+}
+
+/// Insert payload for a single link, used by [`VaultDb::replace_links_for_file`].
+pub struct InsertLink {
+    pub source_block_id: Option<String>,
+    pub target_file_id: Option<String>,
+    pub target_block_id: Option<String>,
+    pub target_heading: Option<String>,
+    pub target_block_ref: Option<String>,
+    pub link_text: String,
+    pub display_text: Option<String>,
+    pub link_type: String,
+    pub line_number: i64,
+    pub column_number: i64,
+}
+
+fn file_row_from(row: &libsql::Row) -> Result<FileRow> {
+    Ok(FileRow {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        title: row.get(2)?,
+        content_hash: row.get(3)?,
+        size_bytes: row.get(4)?,
+        word_count: row.get(5)?,
+        created_at: row.get(6)?,
+        modified_at: row.get(7)?,
+        indexed_at: row.get(8)?,
+        frontmatter: row.get(9)?,
+    })
 }

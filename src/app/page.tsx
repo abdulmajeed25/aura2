@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { FolderOpen, RefreshCw, Save } from "lucide-react";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { FileExplorer } from "@/components/sidebar/FileExplorer";
+import { Backlinks } from "@/components/sidebar/Backlinks";
+import { Outline } from "@/components/sidebar/Outline";
 import { useVaultStore } from "@/lib/store/vaultStore";
 import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
@@ -14,13 +16,19 @@ export default function HomePage() {
   const { info, tree, loading, error, pickAndOpen, refreshTree } =
     useVaultStore();
   const { activePath, content, dirty, saving, save } = useEditorStore();
+  const [refreshKey, setRefreshKey] = useState(0);
 
+  // Listen once for filesystem events and propagate them into both stores.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<VaultChangeEvent>("vault://changed", (event) => {
       void useVaultStore.getState().refreshTree();
+      setRefreshKey((k) => k + 1);
       const editor = useEditorStore.getState();
-      if (event.payload.kind === "removed" && editor.activePath === event.payload.path) {
+      if (
+        event.payload.kind === "removed" &&
+        editor.activePath === event.payload.path
+      ) {
         editor.close();
       }
     }).then((u) => {
@@ -30,6 +38,11 @@ export default function HomePage() {
       unlisten?.();
     };
   }, []);
+
+  // Bump the refresh key after every save so backlinks/outline re-fetch.
+  useEffect(() => {
+    if (!saving && !dirty) setRefreshKey((k) => k + 1);
+  }, [saving, dirty]);
 
   if (!info) {
     return (
@@ -110,6 +123,20 @@ export default function HomePage() {
             </div>
           )}
         </main>
+        <aside className="w-72 shrink-0 border-l border-[var(--color-border)] bg-[var(--color-surface)] flex flex-col overflow-auto">
+          {activePath ? (
+            <>
+              <Outline path={activePath} refreshKey={refreshKey} />
+              <div className="border-t border-[var(--color-border)] mt-2">
+                <Backlinks path={activePath} refreshKey={refreshKey} />
+              </div>
+            </>
+          ) : (
+            <p className="px-3 py-3 text-[var(--color-text-faint)] text-[11px]">
+              Open a note to see its outline and backlinks.
+            </p>
+          )}
+        </aside>
       </div>
       <StatusBar />
     </div>

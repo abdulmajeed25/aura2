@@ -58,8 +58,8 @@ tests/fixtures/sample-vault/   Real fixture vault used by integration tests
 - Migrations are embedded via `include_str!` in `db/sqlite.rs` and tracked in
   `_aura_migrations`. Add a new file in `db/migrations/` and append to the
   `MIGRATIONS` const to ship a new one.
-- Phase 1 schema: `files` table only. Phases 2/3/4 will add `blocks`, `links`,
-  `tags`, `blocks_fts`, vector indexes in LanceDB, etc.
+- Phase 1 schema: `files`. Phase 2 added `blocks` and `links` (002).
+- Future phases will add `tags`, `blocks_fts`, vector indexes in LanceDB, etc.
 
 ## Path safety
 
@@ -99,16 +99,35 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 1)
+## Currently implemented (end of Phase 2)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
 - `list_files`, `file_tree`, `read_file`, `write_file`,
   `create_file`, `delete_file`, `rename_file`
+- `get_backlinks`, `get_outgoing_links`, `get_outline`,
+  `list_link_candidates`
 
 Frontend surfaces: pick + open vault → tree explorer → CodeMirror editor with
-Ctrl/Cmd-S save → status bar with indexed file count → live tree refresh on
-file watcher events.
+Ctrl/Cmd-S save → wiki-link decoration with Ctrl/Cmd-click navigation →
+`[[` autocomplete from indexed files → right-side panel showing Outline +
+Backlinks → status bar with indexed file count → live tree refresh on file
+watcher events.
+
+## Phase 2 internals
+
+- `core::markdown_parser::extract_blocks` walks pulldown-cmark's offset
+  iterator and emits one `ParsedBlock` per top-level Markdown element
+  (Paragraph, Heading, BlockQuote, CodeBlock, List, HtmlBlock, Table,
+  FootnoteDefinition).
+- `core::link_resolver::scan_wiki_links` is a hand-written scanner for
+  `[[target#heading|alias]]` and `[[target#^block-ref|alias]]`.
+- `VaultDb::resolve_link_target` tries exact path with `.md`/`.markdown`,
+  then basename match across folders, then case-sensitive title.
+- `VaultDb::reresolve_unresolved_links` reruns resolution every time a file
+  is added — links to not-yet-created notes heal automatically.
+- `BlockRow.user_ref` stores trailing `^anchor` markers so transclusion in
+  Phase 3 can target specific blocks.
 
 ## Roadmap pointer
 
@@ -117,7 +136,7 @@ upcoming phases:
 
 | Phase | Adds                                           |
 |------:|------------------------------------------------|
-| 2     | Block UUIDs, wiki-links, backlinks, outline    |
+| ✓ 2   | Block UUIDs, wiki-links, backlinks, outline    |
 | 3     | Live preview + transclusion (`![[note#^block]]`) |
 | 4     | Graph view (Pixi.js + Rust force-directed)     |
 | 5     | LanceDB + semantic search                      |

@@ -6,7 +6,14 @@ import { EditorView, keymap, lineNumbers, drawSelection } from "@codemirror/view
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import {
+  completionKeymap,
+  startCompletion,
+} from "@codemirror/autocomplete";
 import { useEditorStore } from "@/lib/store/editorStore";
+import { useVaultStore } from "@/lib/store/vaultStore";
+import { wikiLinkExtension } from "./extensions/wikiLink";
+import { wikiAutocompleteExtension } from "./extensions/wikiAutocomplete";
 
 interface Props {
   path: string;
@@ -17,8 +24,6 @@ export function CodeMirrorEditor({ path, initialContent }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
 
-  // Re-create the editor view whenever the active file path changes,
-  // so the document and history get a clean slate.
   useEffect(() => {
     if (!hostRef.current) return;
 
@@ -29,9 +34,23 @@ export function CodeMirrorEditor({ path, initialContent }: Props) {
         history(),
         drawSelection(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        markdown({ base: markdownLanguage }),
+        EditorView.lineWrapping,
+        wikiLinkExtension({
+          onClick: (target) => {
+            const resolved = useVaultStore.getState().resolveWikiTarget(target);
+            if (resolved) {
+              void useEditorStore.getState().openFile(resolved);
+            }
+          },
+          isResolved: (target) =>
+            useVaultStore.getState().resolveWikiTarget(target) !== null,
+        }),
+        wikiAutocompleteExtension(() => useVaultStore.getState().candidates),
         keymap.of([
           ...defaultKeymap,
           ...historyKeymap,
+          ...completionKeymap,
           {
             key: "Mod-s",
             preventDefault: true,
@@ -41,11 +60,17 @@ export function CodeMirrorEditor({ path, initialContent }: Props) {
             },
           },
         ]),
-        markdown({ base: markdownLanguage }),
-        EditorView.lineWrapping,
         EditorView.updateListener.of((u) => {
           if (u.docChanged) {
             useEditorStore.getState().setContent(u.state.doc.toString());
+            // Trigger autocomplete after typing `[[`.
+            const lastTwo = u.state.doc.sliceString(
+              Math.max(0, u.state.selection.main.head - 2),
+              u.state.selection.main.head
+            );
+            if (lastTwo === "[[") {
+              startCompletion(u.view);
+            }
           }
         }),
       ],
@@ -58,8 +83,6 @@ export function CodeMirrorEditor({ path, initialContent }: Props) {
       view.destroy();
       viewRef.current = null;
     };
-    // initialContent is intentionally captured on mount; subsequent edits flow
-    // through Zustand → EditorView via store, not via prop changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
