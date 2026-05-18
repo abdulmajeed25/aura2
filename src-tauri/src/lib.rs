@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod core;
 pub mod db;
+pub mod protocols;
 pub mod utils;
 
 use std::sync::Arc;
@@ -8,11 +9,13 @@ use tokio::sync::Mutex;
 
 use crate::core::ssm::StreamingState;
 use crate::core::vault::VaultState;
+use crate::protocols::server::McpServerHandle;
 
 /// Application-wide state shared across Tauri command handlers.
 pub struct AppState {
     pub vault: Arc<Mutex<Option<VaultState>>>,
     pub ssm: Arc<Mutex<Option<StreamingState>>>,
+    pub mcp: Arc<Mutex<Option<McpServerHandle>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,6 +30,7 @@ pub fn run() {
     let app_state = AppState {
         vault: Arc::new(Mutex::new(None)),
         ssm: Arc::new(Mutex::new(None)),
+        mcp: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -64,6 +68,9 @@ pub fn run() {
             commands::media::scan_media,
             commands::media::list_media,
             commands::media::delete_media,
+            commands::integrations::start_mcp_server,
+            commands::integrations::stop_mcp_server,
+            commands::integrations::mcp_status,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

@@ -2,6 +2,7 @@ pub mod block;
 pub mod file;
 pub mod graph;
 pub mod graph_rag;
+pub mod integrations;
 pub mod link;
 pub mod media;
 pub mod related;

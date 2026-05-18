@@ -176,3 +176,12 @@ export interface MediaToolsStatus {
   ffmpeg: string | null;
   ffprobe: string | null;
 }
+
+export interface McpStatus {
+  running: boolean;
+  url: string | null;
+  port: number | null;
+  auth_token: string | null;
+  started_at: number | null;
+  request_count: number;
+}

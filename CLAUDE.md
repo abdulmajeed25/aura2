@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 9)
+## Currently implemented (end of Phase 10)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -117,7 +117,9 @@ Commands wired through the handler:
 - `ssm_status`, `ssm_reset`, `ssm_step_text`, `streaming_chat`:
   recurrent streaming state + state-fused chat
 - `media_tools_status`, `ingest_media`, `scan_media`, `list_media`,
-  `delete_media` (Phase 9): local media ingestion + tool probe
+  `delete_media`: local media ingestion + tool probe
+- `start_mcp_server`, `stop_mcp_server`, `mcp_status` (Phase 10):
+  bind / shutdown / inspect the MCP HTTP endpoint
 
 Frontend surfaces: pick + open vault → tree explorer → editor with five view
 modes (Source / Live Preview / Reading / Graph / Global Query) → `Mod+S`
@@ -283,6 +285,41 @@ opens the Search palette.
   multi-turn transcript only displays past Q+A pairs — the actual
   conversational memory lives in the SSM hidden state, fixed-size.
 
+## Phase 10 internals
+
+- `protocols/auth.rs`: SHA-256-mixed entropy from `Instant`, system time,
+  UUIDv7, PID, and thread id → 256-bit URL-safe base64 token. Trivial to
+  copy-paste; collisions are infeasible.
+- `protocols/mcp.rs`: pure-data JSON-RPC dispatcher. Implements
+  `initialize`, `ping`, `tools/list`, `tools/call`. The six aura_* tools
+  thinly wrap the existing core functions: `aura_search`, `aura_read_note`,
+  `aura_write_note`, `aura_list_notes`, `aura_get_backlinks`,
+  `aura_graph_rag_query`. Tool results are returned both as MCP-style
+  `content[].text` (pretty JSON for LLM consumption) and as
+  `structuredContent` (typed payload for programmatic clients).
+- `protocols/server.rs`: axum router bound to `127.0.0.1` only. Every
+  POST `/mcp` request is gated on a `Authorization: Bearer <token>`
+  header. Health endpoint at GET `/health`. Shutdown is graceful with a
+  500ms deadline followed by an abort — keepalive doesn't hang test
+  teardown.
+- `AppState` gains `Arc<Mutex<Option<McpServerHandle>>>`. Each
+  `start_mcp_server` call freshly generates a token and shuts down any
+  previous instance first; stale tokens never work.
+- Frontend: `components/settings/Integrations.tsx` renders the endpoint
+  URL, Bearer token (with copy-to-clipboard), request counter, and a
+  curl example. A multimedia-tools section reports yt-dlp / ffmpeg /
+  ffprobe presence so the user can see why URL ingestion is disabled.
+
+### Aura Control Port (WebSocket) — deferred
+
+The master spec lists a second control surface — JSON-RPC over WebSocket
+at `127.0.0.1:47821` with per-agent permission scopes. Same dispatch
+target as MCP, different transport + auth model (first-message
+authentication, long-lived connections, granular scope). The
+`mcp_dispatch` function is already the natural seam; wiring it under a
+`/aura` WebSocket route is a localised follow-up. CLAUDE.md gets that
+checklist when we get there.
+
 ## Phase 9 internals
 
 - Migration 006 adds `media_files(id, path, kind, size_bytes,
@@ -383,7 +420,7 @@ upcoming phases:
 | ✓ 7   | GraphRAG (LPA + extractive summaries; LLM swap pending) |
 | ✓ 8   | Streaming SSM (EMA stand-in; Mamba ONNX swap pending) |
 | ✓ 9   | Local-media ingestion (byte+desc stand-in; ONNX/yt-dlp swap pending) |
-| 10    | MCP server + Aura Control Port (WebSocket)     |
+| ✓ 10  | MCP HTTP server (Control Port WS deferred)     |
 | 11    | Agent workspace + vault optimization           |
 | 12    | Infinite canvas                                |
 | 13    | Polish + signing + distribution                |
