@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 12)
+## Currently implemented (end of Phase 13)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -125,6 +125,13 @@ Commands wired through the handler:
   one-click append-to-source
 - `list_canvases`, `read_canvas`, `write_canvas`, `create_canvas`
   (Phase 12): infinite-canvas JSON files inside the vault
+
+Phase 13 adds polish (no new commands): CI workflow runs
+`cargo clippy -D warnings`, `cargo test`, `pnpm typecheck`, `pnpm build`
+on every push to `main` and `claude/**` branches. The frontend now
+persists view mode + last opened vault in `localStorage` so the app
+reopens where the user left it, and `Ctrl/Cmd+N` opens a new note
+prompt that creates the file and focuses the editor.
 
 Frontend surfaces: pick + open vault → tree explorer → editor with view
 modes (Source / Live Preview / Reading / Graph / Global Query) plus Agent
@@ -293,6 +300,38 @@ opens the Search palette.
   Reset state button that also clears the on-screen transcript. The
   multi-turn transcript only displays past Q+A pairs — the actual
   conversational memory lives in the SSM hidden state, fixed-size.
+
+## Phase 13 internals
+
+- `.github/workflows/ci.yml` runs two parallel jobs: the Rust core
+  (clippy strict + cargo test) and the Next.js frontend (typecheck +
+  static export). Both cache cargo + pnpm artefacts. Triggered on
+  pushes to `main` and any `claude/**` branch, plus PRs into `main`.
+- `CONTRIBUTING.md` enshrines the five hard rules (Local-First, no
+  mock data, vertical completion, no unwrap, command-registry) and
+  documents the standard feature-shipping pattern.
+- Frontend persistence: `src/app/page.tsx` writes the active view
+  mode + last opened vault to `localStorage` and restores them on
+  mount. On startup, if a last-vault path exists, the app reopens
+  it automatically; on failure (stale path) the entry is cleared so
+  the welcome screen takes over.
+- `Mod+N` opens a `window.prompt` for a new note path, normalises
+  the `.md` extension, calls `create_file`, refreshes the tree, and
+  focuses the new file in the editor.
+- Distribution items the sandbox cannot deliver:
+  - **Code signing.** Requires real Apple Developer / Microsoft
+    Authenticode certificates. Tauri's `tauri.conf.json` already
+    exposes the `signingIdentity` / `certificateThumbprint` fields;
+    a CI job per platform plus a secret-keyed `tauri build` is the
+    standard finishing step.
+  - **Auto-update.** Tauri's updater plugin needs a hosted
+    `latest.json` and signed binaries. Skipped here because it
+    depends on the signing pipeline.
+  - **E2E-encrypted sync.** Substantial new feature; would live in
+    `core::sync` and use `ring` (already in the Cargo.toml feature
+    list) for libsodium-equivalent crypto. Not started.
+  - **Plugin marketplace + landing page.** Out of scope for the
+    desktop app; would live in a sibling repo.
 
 ## Phase 12 internals
 
@@ -476,4 +515,4 @@ upcoming phases:
 | ✓ 10  | MCP HTTP server (Control Port WS deferred)     |
 | ✓ 11  | Agent workspace (HDC link suggestions + orphans; full undo deferred) |
 | ✓ 12  | Infinite canvas (Canvas-2D, drag-from-tree deferred) |
-| 13    | Polish + signing + distribution                |
+| ✓ 13  | Polish: CI workflow, settings persistence, `Mod+N` shortcut, CONTRIBUTING.md |

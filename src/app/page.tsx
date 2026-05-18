@@ -32,7 +32,11 @@ import { RelatedNotes } from "@/components/sidebar/RelatedNotes";
 import { useVaultStore } from "@/lib/store/vaultStore";
 import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
+import { createFile } from "@/lib/tauri/file";
 import type { VaultChangeEvent } from "@/types/vault";
+
+const STORAGE_KEY_MODE = "aura.view-mode";
+const STORAGE_KEY_VAULT = "aura.last-vault-path";
 
 type ViewMode =
   | "source"
@@ -49,10 +53,61 @@ export default function HomePage() {
     useVaultStore();
   const { activePath, content, dirty, saving, save } = useEditorStore();
   const [refreshKey, setRefreshKey] = useState(0);
-  const [mode, setMode] = useState<ViewMode>("live");
+  const [mode, setMode] = useState<ViewMode>(() => {
+    if (typeof window === "undefined") return "live";
+    const stored = window.localStorage.getItem(STORAGE_KEY_MODE);
+    return (stored as ViewMode | null) ?? "live";
+  });
   const [searchOpen, setSearchOpen] = useState(false);
   const [scanningMedia, setScanningMedia] = useState(false);
   const [mediaToast, setMediaToast] = useState<string | null>(null);
+
+  // Persist mode + vault path across reloads.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEY_MODE, mode);
+  }, [mode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (info?.root) {
+      window.localStorage.setItem(STORAGE_KEY_VAULT, info.root);
+    }
+  }, [info?.root]);
+
+  // Re-open the previous vault on first mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const last = window.localStorage.getItem(STORAGE_KEY_VAULT);
+    if (last && !useVaultStore.getState().info) {
+      void useVaultStore.getState().openPath(last).catch(() => {
+        // Stale path (vault moved or deleted) — clear it so the welcome
+        // screen takes over instead of erroring on every load.
+        window.localStorage.removeItem(STORAGE_KEY_VAULT);
+      });
+    }
+  }, []);
+
+  const newNote = async () => {
+    const input = window.prompt(
+      "New note path (vault-relative, e.g. Inbox/2026-05-18.md):"
+    );
+    if (!input) return;
+    const path = input.endsWith(".md") || input.endsWith(".markdown")
+      ? input
+      : `${input}.md`;
+    try {
+      await createFile(path);
+      await useVaultStore.getState().refreshTree();
+      await useEditorStore.getState().openFile(path);
+    } catch (e) {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? String((e as { message: unknown }).message)
+          : String(e);
+      window.alert(msg);
+    }
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -60,6 +115,13 @@ export default function HomePage() {
       if (mod && e.shiftKey && (e.key === "F" || e.key === "f")) {
         e.preventDefault();
         setSearchOpen(true);
+      } else if (mod && !e.shiftKey && (e.key === "n" || e.key === "N")) {
+        // Don't steal the shortcut while typing inside an input/textarea.
+        const tag = (e.target as HTMLElement | null)?.tagName ?? "";
+        const inForm = tag === "INPUT" || tag === "TEXTAREA";
+        if (inForm) return;
+        e.preventDefault();
+        void newNote();
       } else if (e.key === "Escape" && searchOpen) {
         setSearchOpen(false);
       }
