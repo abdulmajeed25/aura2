@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Bot,
   Brain,
   Eye,
   Film,
@@ -17,6 +18,7 @@ import {
 import { scanMedia } from "@/lib/tauri/media";
 import { Integrations } from "@/components/settings/Integrations";
 import { AIChat } from "@/components/ai/AIChat";
+import { AgentWorkspace } from "@/components/ai/AgentWorkspace";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
 import { GraphView } from "@/components/graph/GraphView";
@@ -30,7 +32,14 @@ import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
 import type { VaultChangeEvent } from "@/types/vault";
 
-type ViewMode = "source" | "live" | "reading" | "graph" | "ai" | "integrations";
+type ViewMode =
+  | "source"
+  | "live"
+  | "reading"
+  | "graph"
+  | "ai"
+  | "agent"
+  | "integrations";
 
 export default function HomePage() {
   const { info, tree, loading, error, pickAndOpen, refreshTree } =
@@ -195,6 +204,20 @@ export default function HomePage() {
             </button>
             <button
               type="button"
+              onClick={() => setMode((m) => (m === "agent" ? "live" : "agent"))}
+              className={
+                "w-full inline-flex items-center gap-2 px-3 py-1.5 rounded text-[12px] " +
+                (mode === "agent"
+                  ? "bg-[var(--color-surface-hover)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface-hover)]")
+              }
+              title="Suggested links and orphans"
+            >
+              <Bot size={13} />
+              Agent
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 setMode((m) => (m === "integrations" ? "live" : "integrations"))
               }
@@ -216,6 +239,8 @@ export default function HomePage() {
             <GraphView />
           ) : mode === "ai" ? (
             <AIChat />
+          ) : mode === "agent" ? (
+            <AgentWorkspace />
           ) : mode === "integrations" ? (
             <Integrations />
           ) : activePath ? (
@@ -372,7 +397,9 @@ function StatusBar({
             ? "Graph"
             : mode === "ai"
               ? "Global Query"
-              : "Integrations";
+              : mode === "agent"
+                ? "Agent"
+                : "Integrations";
   return (
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>

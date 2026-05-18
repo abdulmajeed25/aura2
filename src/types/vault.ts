@@ -177,6 +177,29 @@ export interface MediaToolsStatus {
   ffprobe: string | null;
 }
 
+export interface LinkSuggestion {
+  source_file_id: string;
+  source_path: string;
+  source_title: string;
+  target_file_id: string;
+  target_path: string;
+  target_title: string;
+  score: number;
+  shared_neighbours: number;
+}
+
+export interface OrphanNote {
+  file_id: string;
+  path: string;
+  title: string;
+}
+
+export interface ApplyReport {
+  source_path: string;
+  target_path: string;
+  appended: string;
+}
+
 export interface McpStatus {
   running: boolean;
   url: string | null;

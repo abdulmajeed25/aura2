@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 10)
+## Currently implemented (end of Phase 11)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -120,15 +120,22 @@ Commands wired through the handler:
   `delete_media`: local media ingestion + tool probe
 - `start_mcp_server`, `stop_mcp_server`, `mcp_status` (Phase 10):
   bind / shutdown / inspect the MCP HTTP endpoint
+- `suggest_links`, `find_orphan_notes`, `apply_link_suggestion`
+  (Phase 11): HDC-driven link proposals + orphan detection +
+  one-click append-to-source
 
-Frontend surfaces: pick + open vault → tree explorer → editor with five view
-modes (Source / Live Preview / Reading / Graph / Global Query) → `Mod+S`
+Frontend surfaces: pick + open vault → tree explorer → editor with view
+modes (Source / Live Preview / Reading / Graph / Global Query) plus Agent
+and Integrations sidebar panels → `Mod+S`
 save → wiki-link decoration with Ctrl/Cmd-click navigation → `[[`
 autocomplete → inline `![[…]]` embed widgets in Live Preview → fully
 rendered Reading mode (via `marked`) → interactive Canvas-2D graph with
 pan/zoom/filter/click-to-open → AIChat panel with "Rebuild index",
 **Continuous Mode** toggle (Mamba-style SSM streaming), state saturation
-bar, reset-state button, and multi-turn transcript → right-side panel
+bar, reset-state button, and multi-turn transcript → AgentWorkspace
+with Suggested Links + Orphans tabs and one-click Apply → Integrations
+panel exposing the MCP endpoint URL, Bearer token and curl example →
+right-side panel
 with Outline + Backlinks + HDC Related → status bar with indexed file
 count and current mode → live tree refresh on watcher events → `⇧⌘F`
 opens the Search palette.
@@ -285,6 +292,28 @@ opens the Search palette.
   multi-turn transcript only displays past Q+A pairs — the actual
   conversational memory lives in the SSM hidden state, fixed-size.
 
+## Phase 11 internals
+
+- `core::agent::suggestions::compute_suggestions` walks every
+  (source, target) pair of notes that are not already linked, scores
+  them by HDC combined-HV similarity (the same encode_note_combined
+  pipeline find_related uses), and returns the top-K per source then
+  the global top-N. `shared_neighbours` is reported alongside the
+  score so the UI can show *why* a pair ranked.
+- `core::agent::optimization::find_orphans` returns every note that
+  has neither incoming nor outgoing resolved links.
+- `commands::agent::apply_link_suggestion` appends `- [[target]]`
+  (with optional `|alias`) under a `## Related` heading at the end
+  of the source file, creating the section if needed. The file is
+  reindexed immediately so backlinks reflect the change. Full
+  transactional undo across multiple files is deferred — for now the
+  user reverts via standard text-undo or git.
+- Frontend `components/ai/AgentWorkspace.tsx` is a two-tab panel
+  (Suggested Links / Orphans). Each suggestion shows source → target,
+  score, shared-neighbours count, and an Apply button that calls
+  `apply_link_suggestion` and marks the row done. A new "Agent"
+  sidebar mode opens the workspace.
+
 ## Phase 10 internals
 
 - `protocols/auth.rs`: SHA-256-mixed entropy from `Instant`, system time,
@@ -421,6 +450,6 @@ upcoming phases:
 | ✓ 8   | Streaming SSM (EMA stand-in; Mamba ONNX swap pending) |
 | ✓ 9   | Local-media ingestion (byte+desc stand-in; ONNX/yt-dlp swap pending) |
 | ✓ 10  | MCP HTTP server (Control Port WS deferred)     |
-| 11    | Agent workspace + vault optimization           |
+| ✓ 11  | Agent workspace (HDC link suggestions + orphans; full undo deferred) |
 | 12    | Infinite canvas                                |
 | 13    | Polish + signing + distribution                |

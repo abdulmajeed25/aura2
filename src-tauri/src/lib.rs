@@ -71,6 +71,9 @@ pub fn run() {
             commands::integrations::start_mcp_server,
             commands::integrations::stop_mcp_server,
             commands::integrations::mcp_status,
+            commands::agent::suggest_links,
+            commands::agent::find_orphan_notes,
+            commands::agent::apply_link_suggestion,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");
