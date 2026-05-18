@@ -1,0 +1,21 @@
+node_modules/
+.next/
+out/
+.env*.local
+*.log
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local test vault data
+tests/fixtures/sample-vault/.aura/
+tsconfig.tsbuildinfo
