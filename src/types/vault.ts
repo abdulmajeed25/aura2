@@ -140,3 +140,16 @@ export interface GraphRagRebuildReport {
   members_total: number;
   avg_members: number;
 }
+
+export interface SsmStatus {
+  dim: number;
+  step_count: number;
+  saturation: number;
+  last_input_alignment: number;
+  active: boolean;
+}
+
+export interface StreamingChatTurn {
+  answer: GraphRagAnswer;
+  status: SsmStatus;
+}

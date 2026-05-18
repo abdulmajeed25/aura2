@@ -6,11 +6,13 @@ pub mod utils;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::core::ssm::StreamingState;
 use crate::core::vault::VaultState;
 
 /// Application-wide state shared across Tauri command handlers.
 pub struct AppState {
     pub vault: Arc<Mutex<Option<VaultState>>>,
+    pub ssm: Arc<Mutex<Option<StreamingState>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +26,7 @@ pub fn run() {
 
     let app_state = AppState {
         vault: Arc::new(Mutex::new(None)),
+        ssm: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -52,6 +55,10 @@ pub fn run() {
             commands::related::find_related,
             commands::graph_rag::rebuild_graph_rag,
             commands::graph_rag::graph_rag_query,
+            commands::streaming::ssm_status,
+            commands::streaming::ssm_reset,
+            commands::streaming::ssm_step_text,
+            commands::streaming::streaming_chat,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

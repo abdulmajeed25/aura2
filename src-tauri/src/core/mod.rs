@@ -6,4 +6,5 @@ pub mod hdc;
 pub mod link_resolver;
 pub mod markdown_parser;
 pub mod search;
+pub mod ssm;
 pub mod vault;

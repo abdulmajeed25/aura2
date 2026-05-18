@@ -5,4 +5,5 @@ pub mod graph_rag;
 pub mod link;
 pub mod related;
 pub mod search;
+pub mod streaming;
 pub mod vault;

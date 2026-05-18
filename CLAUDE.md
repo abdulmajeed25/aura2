@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 7)
+## Currently implemented (end of Phase 8)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -111,19 +111,22 @@ Commands wired through the handler:
 - `get_graph_snapshot`: positioned `GraphNode`s + edges
 - `search_vault`: semantic / FTS / hybrid block search
 - `find_related`: HDC-ranked related notes for any note
-- `rebuild_graph_rag`, `graph_rag_query` (Phase 7): community
-  detection + extractive summaries + query routing
+- `rebuild_graph_rag`, `graph_rag_query`: community detection +
+  extractive summaries + query routing
+- `ssm_status`, `ssm_reset`, `ssm_step_text`, `streaming_chat`
+  (Phase 8): recurrent streaming state + state-fused chat
 
 Frontend surfaces: pick + open vault → tree explorer → editor with five view
 modes (Source / Live Preview / Reading / Graph / Global Query) → `Mod+S`
 save → wiki-link decoration with Ctrl/Cmd-click navigation → `[[`
 autocomplete → inline `![[…]]` embed widgets in Live Preview → fully
 rendered Reading mode (via `marked`) → interactive Canvas-2D graph with
-pan/zoom/filter/click-to-open → AIChat panel with "Rebuild index" and a
-single-line question box that calls `graph_rag_query`, returning ranked
-community summaries → right-side panel with Outline + Backlinks + HDC
-Related → status bar with indexed file count and current mode → live tree
-refresh on watcher events → `⇧⌘F` opens the Search palette.
+pan/zoom/filter/click-to-open → AIChat panel with "Rebuild index",
+**Continuous Mode** toggle (Mamba-style SSM streaming), state saturation
+bar, reset-state button, and multi-turn transcript → right-side panel
+with Outline + Backlinks + HDC Related → status bar with indexed file
+count and current mode → live tree refresh on watcher events → `⇧⌘F`
+opens the Search palette.
 
 ## Phase 2/3 internals
 
@@ -252,6 +255,44 @@ refresh on watcher events → `⇧⌘F` opens the Search palette.
   call to Anthropic/OpenAI/Ollama, sending `context_payload` as the
   system prompt.
 
+## Phase 8 internals
+
+- `core::ssm::StreamingState` holds a single 384-dim recurrent hidden
+  vector + step count + last-alignment scalar. `step(input)` runs the
+  EMA update `h' = normalise(α·h + (1-α)·x)` (default α = 0.82), so the
+  state has fixed memory regardless of how many turns have been
+  processed — the property Mamba targets.
+- `compose_query(input, blend)` returns a unit-norm interpolation of
+  the current state and the freshly-encoded input. `streaming_chat`
+  uses it as the retrieval embedding so the conversation's accumulated
+  context biases ranking, not just the latest message.
+- The Tauri-level `AppState` carries an `Arc<Mutex<Option<StreamingState>>>`
+  beside the vault. There's a single active session at a time;
+  `ssm_reset` zeroes it.
+- `commands::streaming::streaming_chat` runs the SSM step first, then
+  reuses the GraphRAG community index but with the fused query vector
+  rather than re-encoding the bare question. Falls back to the
+  encoder-only path when the index or fused vector is empty.
+- Frontend: `components/ai/AIChat.tsx` shows the **Continuous Mode**
+  toggle, a saturation progress bar driven by `SsmStatus.saturation`,
+  the `last_input_alignment` ("how surprising the input was"), and a
+  Reset state button that also clears the on-screen transcript. The
+  multi-turn transcript only displays past Q+A pairs — the actual
+  conversational memory lives in the SSM hidden state, fixed-size.
+
+### Real-Mamba swap checklist
+
+`StreamingState` is the same trait surface a real Mamba-130M ONNX
+runtime would expose (`step`, `reset`, `compose_query`). To wire in
+the production runtime:
+1. Add `ort` + `tokenizers` to `Cargo.toml`.
+2. Create `core::ssm::MambaState` that loads the ONNX model once and
+   stores `hidden_state` per the model's `d_state × d_model` shape.
+3. Replace `state.ssm` slot's type with a `Box<dyn StreamingBackend>`
+   trait object, default to the EMA stand-in, allow switching to Mamba
+   at startup.
+4. No frontend changes required — the wire format stays identical.
+
 ### LLM swap checklist
 
 The pipeline produces a ready-to-consume `context_payload`. To turn
@@ -289,7 +330,7 @@ upcoming phases:
 | ✓ 5   | FTS5 + hash-feature semantic search (ONNX swap pending) |
 | ✓ 6   | HDC encoder (text + neighbourhood-aware Related panel) |
 | ✓ 7   | GraphRAG (LPA + extractive summaries; LLM swap pending) |
-| 8     | SSM/Mamba streaming                            |
+| ✓ 8   | Streaming SSM (EMA stand-in; Mamba ONNX swap pending) |
 | 9     | Multimedia ingestion (Whisper, SigLIP, yt-dlp) |
 | 10    | MCP server + Aura Control Port (WebSocket)     |
 | 11    | Agent workspace + vault optimization           |
