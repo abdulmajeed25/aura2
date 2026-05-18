@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Brain,
   Eye,
   FolderOpen,
   Network,
@@ -11,6 +12,7 @@ import {
   Save,
   SplitSquareHorizontal,
 } from "lucide-react";
+import { AIChat } from "@/components/ai/AIChat";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
 import { GraphView } from "@/components/graph/GraphView";
@@ -24,7 +26,7 @@ import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
 import type { VaultChangeEvent } from "@/types/vault";
 
-type ViewMode = "source" | "live" | "reading" | "graph";
+type ViewMode = "source" | "live" | "reading" | "graph" | "ai";
 
 export default function HomePage() {
   const { info, tree, loading, error, pickAndOpen, refreshTree } =
@@ -123,7 +125,7 @@ export default function HomePage() {
           <div className="flex-1 overflow-auto pb-4">
             {tree && <FileExplorer tree={tree} />}
           </div>
-          <div className="border-t border-[var(--color-border)] p-2">
+          <div className="border-t border-[var(--color-border)] p-2 space-y-1">
             <button
               type="button"
               onClick={() => setMode((m) => (m === "graph" ? "live" : "graph"))}
@@ -138,11 +140,27 @@ export default function HomePage() {
               <Network size={13} />
               Graph view
             </button>
+            <button
+              type="button"
+              onClick={() => setMode((m) => (m === "ai" ? "live" : "ai"))}
+              className={
+                "w-full inline-flex items-center gap-2 px-3 py-1.5 rounded text-[12px] " +
+                (mode === "ai"
+                  ? "bg-[var(--color-surface-hover)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface-hover)]")
+              }
+              title="Global GraphRAG query"
+            >
+              <Brain size={13} />
+              Global query
+            </button>
           </div>
         </aside>
         <main className="flex-1 min-w-0 flex flex-col bg-[var(--color-bg)]">
           {mode === "graph" ? (
             <GraphView />
+          ) : mode === "ai" ? (
+            <AIChat />
           ) : activePath ? (
             <>
               <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)]">
@@ -293,7 +311,9 @@ function StatusBar({
         ? "Live Preview"
         : mode === "reading"
           ? "Reading"
-          : "Graph";
+          : mode === "graph"
+            ? "Graph"
+            : "Global Query";
   return (
     <footer className="h-6 shrink-0 border-t border-[var(--color-border)] flex items-center px-3 text-[11px] text-[var(--color-text-faint)] gap-4">
       <span>{info?.file_count ?? 0} notes indexed</span>

@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 6)
+## Currently implemented (end of Phase 7)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -110,16 +110,20 @@ Commands wired through the handler:
 - `resolve_embed`: file / heading-section / `^anchor` block
 - `get_graph_snapshot`: positioned `GraphNode`s + edges
 - `search_vault`: semantic / FTS / hybrid block search
-- `find_related` (Phase 6): HDC-ranked related notes for any note
+- `find_related`: HDC-ranked related notes for any note
+- `rebuild_graph_rag`, `graph_rag_query` (Phase 7): community
+  detection + extractive summaries + query routing
 
-Frontend surfaces: pick + open vault → tree explorer → editor with four view
-modes (Source / Live Preview / Reading / Graph) → `Mod+S` save → wiki-link
-decoration with Ctrl/Cmd-click navigation → `[[` autocomplete → inline
-`![[…]]` embed widgets in Live Preview → fully rendered Reading mode (via
-`marked`) → interactive Canvas-2D graph with pan/zoom/filter/click-to-open →
-right-side panel with Outline + Backlinks + **HDC Related** → status bar
-with indexed file count and current mode → live tree refresh on watcher
-events → `⇧⌘F` opens the Search palette (hybrid / semantic / fts modes).
+Frontend surfaces: pick + open vault → tree explorer → editor with five view
+modes (Source / Live Preview / Reading / Graph / Global Query) → `Mod+S`
+save → wiki-link decoration with Ctrl/Cmd-click navigation → `[[`
+autocomplete → inline `![[…]]` embed widgets in Live Preview → fully
+rendered Reading mode (via `marked`) → interactive Canvas-2D graph with
+pan/zoom/filter/click-to-open → AIChat panel with "Rebuild index" and a
+single-line question box that calls `graph_rag_query`, returning ranked
+community summaries → right-side panel with Outline + Backlinks + HDC
+Related → status bar with indexed file count and current mode → live tree
+refresh on watcher events → `⇧⌘F` opens the Search palette.
 
 ## Phase 2/3 internals
 
@@ -214,6 +218,52 @@ events → `⇧⌘F` opens the Search palette (hybrid / semantic / fts modes).
 - Frontend: `components/sidebar/RelatedNotes.tsx` appears in the right
   panel under Backlinks and re-fetches on save / watcher events.
 
+## Phase 7 internals
+
+- Migration 005 adds `communities` and `community_files` tables.
+  `communities.embedding` stores a 384-dim embedding of the community's
+  textual summary, so a query embeds once and ranks all communities by
+  cosine — no per-note scan needed at query time.
+- `core::graph_rag::community_detector::detect_communities` runs Label
+  Propagation Algorithm (LPA) over the link graph. Each node starts
+  with a unique label and adopts the most-common label among its
+  neighbours; ties broken by smallest label id, visit order seeded by
+  `ChaCha8Rng` so the partition is reproducible. The spec asks for
+  Leiden across 4 hierarchical levels; multi-level is the natural
+  extension (return a `Vec<HashMap>` from `detect_communities` and
+  the summariser / query engine consume it unchanged).
+- `core::graph_rag::summarizer::leading_paragraphs` strips frontmatter
+  and headings, returning the leading narrative text. The community
+  summary is `extractive_summary` over each member's `(title, lead)`,
+  hard-capped at 1200 chars so wide communities still summarise in
+  bounded space.
+- `core::graph_rag::query_engine::run_query` encodes the question with
+  the Phase 5 `HashEmbedder` (so we share one embedding space across
+  search + GraphRAG), cosine-ranks every community in parallel, and
+  assembles a compact `context_payload`. The DTO reports
+  `estimated_tokens` and `covered_notes` so the UI can visualise the
+  spec's compression headline.
+- `commands::graph_rag::rebuild_graph_rag` is the one place that
+  combines detection + per-community summarisation + persistence.
+  `graph_rag_query` is a thin wrapper around the engine.
+- Frontend: `components/ai/AIChat.tsx` is the Phase 7 user surface.
+  It deliberately stops at "context payload" — wiring a real LLM call
+  is a single replacement of the answer rendering with a streaming
+  call to Anthropic/OpenAI/Ollama, sending `context_payload` as the
+  system prompt.
+
+### LLM swap checklist
+
+The pipeline produces a ready-to-consume `context_payload`. To turn
+that into a natural-language answer:
+1. Add an `anthropic-sdk-rust` (or equivalent) dependency.
+2. Create `core::ai::providers` with an `AIProvider` trait
+   (`fn summarize(&self, prompt: &str) -> String`).
+3. In `AIChat.tsx`, after `graphRagQuery` resolves, send the answer's
+   `context_payload` and the user's `question` to a new
+   `commands::ai::generate_answer` that calls the provider.
+4. No schema or core changes are required.
+
 ### Real-MiniLM swap checklist
 
 The Hash embedder is a stand-in. When a real ONNX `all-MiniLM-L6-v2`
@@ -238,7 +288,7 @@ upcoming phases:
 | ✓ 4   | Graph view (Canvas 2D + Rust force-directed)   |
 | ✓ 5   | FTS5 + hash-feature semantic search (ONNX swap pending) |
 | ✓ 6   | HDC encoder (text + neighbourhood-aware Related panel) |
-| 7     | GraphRAG (Leiden + hierarchical summaries)     |
+| ✓ 7   | GraphRAG (LPA + extractive summaries; LLM swap pending) |
 | 8     | SSM/Mamba streaming                            |
 | 9     | Multimedia ingestion (Whisper, SigLIP, yt-dlp) |
 | 10    | MCP server + Aura Control Port (WebSocket)     |

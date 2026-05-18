@@ -50,6 +50,8 @@ pub fn run() {
             commands::graph::get_graph_snapshot,
             commands::search::search_vault,
             commands::related::find_related,
+            commands::graph_rag::rebuild_graph_rag,
+            commands::graph_rag::graph_rag_query,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

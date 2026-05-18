@@ -116,3 +116,27 @@ export interface RelatedNote {
   score: number;
   shared_neighbours: number;
 }
+
+export interface CommunityHit {
+  community_id: number;
+  level: number;
+  member_count: number;
+  member_paths: string[];
+  member_titles: string[];
+  summary_text: string;
+  score: number;
+}
+
+export interface GraphRagAnswer {
+  question: string;
+  communities: CommunityHit[];
+  context_payload: string;
+  estimated_tokens: number;
+  covered_notes: number;
+}
+
+export interface GraphRagRebuildReport {
+  communities: number;
+  members_total: number;
+  avg_members: number;
+}

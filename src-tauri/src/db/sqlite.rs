@@ -17,6 +17,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("003_search", include_str!("migrations/003_search.sql")),
     ("004_hdc", include_str!("migrations/004_hdc.sql")),
+    (
+        "005_graph_rag",
+        include_str!("migrations/005_graph_rag.sql"),
+    ),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -373,6 +377,103 @@ impl VaultDb {
         Ok(map)
     }
 
+    // ─── GraphRAG (Phase 7) ───────────────────────────────────────────
+
+    /// Replace the entire community partition for the vault. Atomic in the
+    /// sense that the old rows are wiped before the new ones land — readers
+    /// during a rebuild may see an empty table for a moment.
+    pub async fn replace_communities(
+        &self,
+        partitions: &[ReplaceCommunity<'_>],
+    ) -> Result<()> {
+        self.conn.execute("DELETE FROM community_files", ()).await?;
+        self.conn.execute("DELETE FROM communities", ()).await?;
+        let now = chrono::Utc::now().timestamp_millis();
+        for p in partitions {
+            let mut rows = self
+                .conn
+                .query(
+                    "INSERT INTO communities
+                        (level, parent_id, member_count, summary_text, embedding, dim, indexed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     RETURNING id",
+                    libsql::params![
+                        p.level,
+                        Option::<i64>::None,
+                        p.member_file_ids.len() as i64,
+                        p.summary_text.to_string(),
+                        p.embedding.to_vec(),
+                        p.dim,
+                        now,
+                    ],
+                )
+                .await?;
+            let community_id: i64 = match rows.next().await? {
+                Some(row) => row.get(0)?,
+                None => continue,
+            };
+            for fid in &p.member_file_ids {
+                self.conn
+                    .execute(
+                        "INSERT INTO community_files (community_id, file_id) VALUES (?1, ?2)",
+                        libsql::params![community_id, fid.to_string()],
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn all_communities_with_members(
+        &self,
+    ) -> Result<Vec<crate::core::graph_rag::query_engine::CommunityRow>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, level, member_count, summary_text, embedding
+                 FROM communities ORDER BY id",
+                (),
+            )
+            .await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id: i64 = row.get(0)?;
+            let level: i64 = row.get(1)?;
+            let member_count: i64 = row.get(2)?;
+            let summary_text: String = row.get(3)?;
+            let embedding: Vec<u8> = row.get(4)?;
+
+            let mut mrows = self
+                .conn
+                .query(
+                    "SELECT f.path, f.title FROM community_files c
+                     JOIN files f ON f.id = c.file_id
+                     WHERE c.community_id = ?1
+                     ORDER BY f.path",
+                    libsql::params![id],
+                )
+                .await?;
+            let mut member_paths = Vec::new();
+            let mut member_titles = Vec::new();
+            while let Some(m) = mrows.next().await? {
+                member_paths.push(m.get::<String>(0)?);
+                member_titles.push(m.get::<String>(1)?);
+            }
+
+            out.push(crate::core::graph_rag::query_engine::CommunityRow {
+                id,
+                level,
+                member_count,
+                member_paths,
+                member_titles,
+                summary_text,
+                embedding,
+            });
+        }
+        Ok(out)
+    }
+
     /// FTS5 full-text search returning `(meta, bm25_score)`. Lower bm25 is better.
     pub async fn fts_search(
         &self,
@@ -720,6 +821,15 @@ impl VaultDb {
         }
         Ok(healed)
     }
+}
+
+/// Payload for [`VaultDb::replace_communities`].
+pub struct ReplaceCommunity<'a> {
+    pub level: i64,
+    pub member_file_ids: Vec<&'a str>,
+    pub summary_text: &'a str,
+    pub embedding: &'a [u8],
+    pub dim: i64,
 }
 
 /// Insert payload for a single link, used by [`VaultDb::replace_links_for_file`].

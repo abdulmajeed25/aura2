@@ -1,6 +1,7 @@
 pub mod embeddings;
 pub mod file_watcher;
 pub mod graph_engine;
+pub mod graph_rag;
 pub mod hdc;
 pub mod link_resolver;
 pub mod markdown_parser;

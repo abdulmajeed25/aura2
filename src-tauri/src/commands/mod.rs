@@ -1,6 +1,7 @@
 pub mod block;
 pub mod file;
 pub mod graph;
+pub mod graph_rag;
 pub mod link;
 pub mod related;
 pub mod search;
