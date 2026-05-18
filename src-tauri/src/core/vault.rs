@@ -7,6 +7,8 @@ use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
 use crate::core::embeddings::{embedding_to_bytes, HashEmbedder, TextEncoder};
+use crate::core::hdc::encoder::encode_text as encode_text_hv;
+use crate::core::hdc::HV_DIM;
 use crate::core::link_resolver::scan_wiki_links;
 use crate::core::markdown_parser::parse_document;
 use crate::db::schemas::{BlockRow, FileRow};
@@ -187,6 +189,13 @@ impl VaultState {
             .collect();
         self.db
             .replace_block_embeddings_for_file(&file_id, &embedding_rows)
+            .await?;
+
+        // Phase 6: compute and store the per-note HDC text hypervector.
+        let text_hv = encode_text_hv(&content);
+        let packed = text_hv.to_packed_bytes();
+        self.db
+            .upsert_note_text_hv(&file_id, HV_DIM as i64, &packed, &file_row.content_hash)
             .await?;
 
         // Build map from line_number → block_id for source_block_id resolution.

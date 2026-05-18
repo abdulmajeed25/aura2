@@ -18,6 +18,7 @@ import { SearchPalette } from "@/components/search/SearchPalette";
 import { FileExplorer } from "@/components/sidebar/FileExplorer";
 import { Backlinks } from "@/components/sidebar/Backlinks";
 import { Outline } from "@/components/sidebar/Outline";
+import { RelatedNotes } from "@/components/sidebar/RelatedNotes";
 import { useVaultStore } from "@/lib/store/vaultStore";
 import { useEditorStore } from "@/lib/store/editorStore";
 import { reindexVault } from "@/lib/tauri/vault";
@@ -184,6 +185,9 @@ export default function HomePage() {
               <Outline path={activePath} refreshKey={refreshKey} />
               <div className="border-t border-[var(--color-border)] mt-2">
                 <Backlinks path={activePath} refreshKey={refreshKey} />
+              </div>
+              <div className="border-t border-[var(--color-border)] mt-2">
+                <RelatedNotes path={activePath} refreshKey={refreshKey} />
               </div>
             </>
           ) : (

@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 5)
+## Currently implemented (end of Phase 6)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -109,17 +109,17 @@ Commands wired through the handler:
   `list_link_candidates`
 - `resolve_embed`: file / heading-section / `^anchor` block
 - `get_graph_snapshot`: positioned `GraphNode`s + edges
-- `search_vault` (Phase 5): semantic / FTS / hybrid block search
+- `search_vault`: semantic / FTS / hybrid block search
+- `find_related` (Phase 6): HDC-ranked related notes for any note
 
 Frontend surfaces: pick + open vault → tree explorer → editor with four view
 modes (Source / Live Preview / Reading / Graph) → `Mod+S` save → wiki-link
 decoration with Ctrl/Cmd-click navigation → `[[` autocomplete → inline
 `![[…]]` embed widgets in Live Preview → fully rendered Reading mode (via
 `marked`) → interactive Canvas-2D graph with pan/zoom/filter/click-to-open →
-right-side panel with Outline + Backlinks → status bar with indexed file
-count and current mode → live tree refresh on watcher events → `⇧⌘F` opens
-the Search palette (hybrid / semantic / fts modes, debounced, arrow-key
-navigation, ↵ to open).
+right-side panel with Outline + Backlinks + **HDC Related** → status bar
+with indexed file count and current mode → live tree refresh on watcher
+events → `⇧⌘F` opens the Search palette (hybrid / semantic / fts modes).
 
 ## Phase 2/3 internals
 
@@ -186,6 +186,34 @@ navigation, ↵ to open).
   exposes a hybrid/semantic/fts toggle, and supports arrow-key
   navigation + ↵ to open. Bound to `Ctrl/Cmd+Shift+F`.
 
+## Phase 6 internals
+
+- Migration 004 adds `note_text_hvs(file_id, dim, hv_packed, content_hash,
+  indexed_at)`. Each row stores a single 10,000-bit packed text HV
+  (1250 bytes).
+- `core::hdc::hypervector::Hypervector` is bipolar (i8 ±1) with `bind`,
+  `bundle`, `permute`, `similarity`, and packed (de)serializers.
+  `from_token` seeds `ChaCha8Rng` via FNV-1a so the same token always
+  produces the same HV across runs and machines.
+- `core::hdc::encoder::encode_text` tokenises text the same way the
+  Phase 5 embedder does, builds unigram HVs and `permute`-ordered bigram
+  HVs, and bundles them. Document HV depends only on content.
+- `core::hdc::graph_encoder::encode_note_combined` bundles the text HV
+  with `permute(0)`/`permute(1)` of neighbour identity HVs for outgoing
+  vs incoming edges respectively. This means a note can be HDC-similar
+  to another because they share *neighbours* (graph topology) even when
+  they share no vocabulary — the key property the Phase 5 hash embedding
+  cannot capture.
+- `find_related` computes the query note's combined HV, then in parallel
+  (`rayon`) scores every other note's combined HV by cosine similarity.
+  `RelatedNote.shared_neighbours` is reported alongside the score so the
+  UI can show why a note ranked.
+- Single store: only `text_hv` is persisted. Combined HVs are recomputed
+  on every `find_related` call (≤ ~100 ms for ~1k notes) using the live
+  link table, so they're never stale.
+- Frontend: `components/sidebar/RelatedNotes.tsx` appears in the right
+  panel under Backlinks and re-fetches on save / watcher events.
+
 ### Real-MiniLM swap checklist
 
 The Hash embedder is a stand-in. When a real ONNX `all-MiniLM-L6-v2`
@@ -209,7 +237,7 @@ upcoming phases:
 | ✓ 3   | Live preview + transclusion (`![[note#^block]]`) |
 | ✓ 4   | Graph view (Canvas 2D + Rust force-directed)   |
 | ✓ 5   | FTS5 + hash-feature semantic search (ONNX swap pending) |
-| 6     | HDC encoder                                    |
+| ✓ 6   | HDC encoder (text + neighbourhood-aware Related panel) |
 | 7     | GraphRAG (Leiden + hierarchical summaries)     |
 | 8     | SSM/Mamba streaming                            |
 | 9     | Multimedia ingestion (Whisper, SigLIP, yt-dlp) |

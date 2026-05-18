@@ -16,6 +16,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/002_blocks_links.sql"),
     ),
     ("003_search", include_str!("migrations/003_search.sql")),
+    ("004_hdc", include_str!("migrations/004_hdc.sql")),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -286,6 +287,90 @@ impl VaultDb {
             ));
         }
         Ok(out)
+    }
+
+    // ─── HDC (Phase 6) ────────────────────────────────────────────────
+
+    /// Upsert a note's packed text hypervector keyed on `file_id`.
+    pub async fn upsert_note_text_hv(
+        &self,
+        file_id: &str,
+        dim: i64,
+        packed: &[u8],
+        content_hash: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.conn
+            .execute(
+                "INSERT INTO note_text_hvs (file_id, dim, hv_packed, content_hash, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(file_id) DO UPDATE SET
+                    dim = excluded.dim,
+                    hv_packed = excluded.hv_packed,
+                    content_hash = excluded.content_hash,
+                    indexed_at = excluded.indexed_at",
+                libsql::params![
+                    file_id.to_string(),
+                    dim,
+                    packed.to_vec(),
+                    content_hash.to_string(),
+                    now,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Stream `(file_id, path, title, dim, packed_bytes)` for every note that
+    /// has a stored text HV. Used to compute combined HVs on-demand.
+    pub async fn all_note_text_hvs(
+        &self,
+    ) -> Result<Vec<(String, String, String, i64, Vec<u8>)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT h.file_id, f.path, f.title, h.dim, h.hv_packed
+                 FROM note_text_hvs h
+                 JOIN files f ON f.id = h.file_id",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push((
+                row.get::<String>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<i64>(3)?,
+                row.get::<Vec<u8>>(4)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// For each note, return (file_id, outgoing_neighbour_ids, incoming_neighbour_ids).
+    /// Only resolved links count toward the neighbourhood.
+    pub async fn neighbour_map(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (Vec<String>, Vec<String>)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT source_file_id, target_file_id
+                 FROM links
+                 WHERE is_resolved = 1 AND target_file_id IS NOT NULL",
+                (),
+            )
+            .await?;
+        let mut map: std::collections::HashMap<String, (Vec<String>, Vec<String>)> =
+            std::collections::HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let src: String = row.get(0)?;
+            let tgt: String = row.get(1)?;
+            map.entry(src.clone()).or_default().0.push(tgt.clone());
+            map.entry(tgt).or_default().1.push(src);
+        }
+        Ok(map)
     }
 
     /// FTS5 full-text search returning `(meta, bm25_score)`. Lower bm25 is better.

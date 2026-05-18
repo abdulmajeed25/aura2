@@ -108,3 +108,11 @@ export interface SearchHit {
   snippet: string;
   matched_via: "semantic" | "fts" | "both";
 }
+
+export interface RelatedNote {
+  file_id: string;
+  path: string;
+  title: string;
+  score: number;
+  shared_neighbours: number;
+}
