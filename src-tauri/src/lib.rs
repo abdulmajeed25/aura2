@@ -59,6 +59,11 @@ pub fn run() {
             commands::streaming::ssm_reset,
             commands::streaming::ssm_step_text,
             commands::streaming::streaming_chat,
+            commands::media::media_tools_status,
+            commands::media::ingest_media,
+            commands::media::scan_media,
+            commands::media::list_media,
+            commands::media::delete_media,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");

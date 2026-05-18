@@ -57,7 +57,7 @@ async fn semantic_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<Se
     }
 
     let rows = db.all_block_embeddings_with_meta().await?;
-    let scored: Vec<(f32, BlockMeta)> = rows
+    let mut scored_blocks: Vec<(f32, BlockMeta)> = rows
         .into_par_iter()
         .map(|(meta, emb)| {
             let sim = cosine_similarity(&q_vec, &emb);
@@ -66,11 +66,32 @@ async fn semantic_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<Se
         .filter(|(s, _)| *s > 0.01)
         .collect();
 
-    let mut scored = scored;
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
+    // Phase 9: media files live in the same 384-dim space, so we score them
+    // alongside text blocks and merge — one cosine ranking across modalities.
+    let media = db.all_media_with_embeddings().await.unwrap_or_default();
+    let media_hits: Vec<SearchHit> = media
+        .into_par_iter()
+        .filter_map(|(row, emb)| {
+            let sim = cosine_similarity(&q_vec, &emb);
+            if sim <= 0.01 {
+                return None;
+            }
+            Some(SearchHit {
+                block_id: row.id,
+                file_id: row.path.clone(),
+                file_path: row.path,
+                file_title: row.description.clone(),
+                block_type: format!("media:{}", row.kind),
+                line_number: 0,
+                score: sim,
+                snippet: row.description,
+                matched_via: "semantic",
+            })
+        })
+        .collect();
 
-    Ok(scored
+    scored_blocks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<SearchHit> = scored_blocks
         .into_iter()
         .map(|(sim, m)| SearchHit {
             block_id: m.block_id,
@@ -83,7 +104,11 @@ async fn semantic_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<Se
             snippet: snippet_around(&m.content, query),
             matched_via: "semantic",
         })
-        .collect())
+        .collect();
+    out.extend(media_hits);
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.truncate(limit);
+    Ok(out)
 }
 
 async fn fts_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<SearchHit>> {

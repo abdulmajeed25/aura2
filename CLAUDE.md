@@ -99,7 +99,7 @@ When adding a `#[tauri::command]`, **also** add it to the
 `tauri::generate_handler![…]` list in `src-tauri/src/lib.rs`. Forgetting this
 results in a clean `cargo build` but a 500 at runtime from the frontend.
 
-## Currently implemented (end of Phase 8)
+## Currently implemented (end of Phase 9)
 
 Commands wired through the handler:
 - `open_vault`, `close_vault`, `current_vault`, `reindex_vault`
@@ -109,12 +109,15 @@ Commands wired through the handler:
   `list_link_candidates`
 - `resolve_embed`: file / heading-section / `^anchor` block
 - `get_graph_snapshot`: positioned `GraphNode`s + edges
-- `search_vault`: semantic / FTS / hybrid block search
+- `search_vault`: semantic / FTS / hybrid block search,
+  **merged with media hits in the unified 384-dim space**
 - `find_related`: HDC-ranked related notes for any note
 - `rebuild_graph_rag`, `graph_rag_query`: community detection +
   extractive summaries + query routing
-- `ssm_status`, `ssm_reset`, `ssm_step_text`, `streaming_chat`
-  (Phase 8): recurrent streaming state + state-fused chat
+- `ssm_status`, `ssm_reset`, `ssm_step_text`, `streaming_chat`:
+  recurrent streaming state + state-fused chat
+- `media_tools_status`, `ingest_media`, `scan_media`, `list_media`,
+  `delete_media` (Phase 9): local media ingestion + tool probe
 
 Frontend surfaces: pick + open vault → tree explorer → editor with five view
 modes (Source / Live Preview / Reading / Graph / Global Query) → `Mod+S`
@@ -280,6 +283,54 @@ opens the Search palette.
   multi-turn transcript only displays past Q+A pairs — the actual
   conversational memory lives in the SSM hidden state, fixed-size.
 
+## Phase 9 internals
+
+- Migration 006 adds `media_files(id, path, kind, size_bytes,
+  duration_ms?, description, embedding, dim, indexed_at)`. Path is
+  vault-relative and UNIQUE.
+- `core::multimedia::detect_kind` recognises audio (mp3/wav/ogg/flac/
+  m4a/aac/opus), video (mp4/mov/mkv/webm/avi), and image (png/jpg/
+  jpeg/gif/webp/bmp/svg) extensions.
+- `core::multimedia::encode_media` produces a 384-dim vector in the
+  same space as text. The recipe: `HashEmbedder(description) * 0.85 +
+  unit_norm(byte_fingerprint) * 0.15`, then L2-normalised. The text
+  half dominates so retrieval ranks media by name + folder + kind
+  (the user-typed words); the byte half differentiates duplicates and
+  resists trivial renames.
+- `byte_fingerprint` projects fixed-position byte windows (leading
+  4KB, trailing 4KB, optional interior) through SHA-256 seeds into the
+  384-d slot space. Constant cost regardless of file size.
+- `core::multimedia::tools::ToolsStatus::probe()` shells out to
+  `yt-dlp --version` / `ffmpeg -version` / `ffprobe -version` so the
+  frontend can disable URL ingestion when they're missing (the sandbox
+  case).
+- Unified search: `core::search::semantic_only` now scores text blocks
+  AND media rows under the same query embedding, merges, and reranks.
+  Media hits carry `block_type = "media:audio" | "media:video" |
+  "media:image"` so the UI can render them with a kind icon.
+- Frontend: a "Scan media" button in the sidebar walks the vault for
+  media extensions and ingests them via `scan_media`. The
+  SearchPalette shows kind icons inline.
+
+### Whisper / SigLIP / yt-dlp swap checklist
+
+The byte+description encoder is a stand-in. To wire in the real
+multimodal stack:
+1. Add `ort` + `tokenizers` + (optional) `image` / `hound` to
+   `Cargo.toml`.
+2. Implement a `MediaEncoder` trait alongside `TextEncoder` and back
+   it with Whisper-tiny (audio → text → embedding) and SigLIP-small
+   (image → embedding directly). Both target dim=384 to share the
+   space.
+3. For video: extract keyframes via `ffmpeg`, encode each with SigLIP,
+   then `Hypervector::bundle` them — Phase 6's HDC tooling is already
+   available.
+4. For URL ingestion: surface the `ToolsStatus` checked status to the
+   UI and only enable a "Paste YouTube URL" affordance when both
+   `yt-dlp` and `ffmpeg` are present; on submit, call `yt-dlp -x` for
+   the audio and pass the resulting WAV to the audio encoder.
+5. Re-run `scan_media`. No schema change is required.
+
 ### Real-Mamba swap checklist
 
 `StreamingState` is the same trait surface a real Mamba-130M ONNX
@@ -331,7 +382,7 @@ upcoming phases:
 | ✓ 6   | HDC encoder (text + neighbourhood-aware Related panel) |
 | ✓ 7   | GraphRAG (LPA + extractive summaries; LLM swap pending) |
 | ✓ 8   | Streaming SSM (EMA stand-in; Mamba ONNX swap pending) |
-| 9     | Multimedia ingestion (Whisper, SigLIP, yt-dlp) |
+| ✓ 9   | Local-media ingestion (byte+desc stand-in; ONNX/yt-dlp swap pending) |
 | 10    | MCP server + Aura Control Port (WebSocket)     |
 | 11    | Agent workspace + vault optimization           |
 | 12    | Infinite canvas                                |

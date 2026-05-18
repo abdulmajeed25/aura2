@@ -5,7 +5,7 @@ use chrono::Utc;
 use libsql::{Builder, Connection, Database};
 
 use crate::db::schemas::{
-    BacklinkEntry, BlockRow, FileRow, LinkCandidate, OutgoingLinkEntry,
+    BacklinkEntry, BlockRow, FileRow, LinkCandidate, MediaRow, OutgoingLinkEntry,
 };
 
 /// Embedded migration files. Order matters; they run in array order.
@@ -21,6 +21,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "005_graph_rag",
         include_str!("migrations/005_graph_rag.sql"),
     ),
+    ("006_media", include_str!("migrations/006_media.sql")),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -375,6 +376,144 @@ impl VaultDb {
             map.entry(tgt).or_default().1.push(src);
         }
         Ok(map)
+    }
+
+    // ─── Multimedia (Phase 9) ─────────────────────────────────────────
+
+    pub async fn upsert_media(
+        &self,
+        row: &MediaRow,
+        embedding: &[u8],
+        dim: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO media_files (
+                    id, path, kind, size_bytes, duration_ms,
+                    description, embedding, dim, indexed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(path) DO UPDATE SET
+                    kind = excluded.kind,
+                    size_bytes = excluded.size_bytes,
+                    duration_ms = excluded.duration_ms,
+                    description = excluded.description,
+                    embedding = excluded.embedding,
+                    dim = excluded.dim,
+                    indexed_at = excluded.indexed_at",
+                libsql::params![
+                    row.id.clone(),
+                    row.path.clone(),
+                    row.kind.clone(),
+                    row.size_bytes,
+                    row.duration_ms,
+                    row.description.clone(),
+                    embedding.to_vec(),
+                    dim,
+                    row.indexed_at,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_media_by_path(&self, path: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM media_files WHERE path = ?1",
+                libsql::params![path.to_string()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_media_by_path(&self, path: &str) -> Result<Option<MediaRow>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, path, kind, size_bytes, duration_ms, description, indexed_at
+                 FROM media_files WHERE path = ?1",
+                libsql::params![path.to_string()],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(MediaRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                kind: row.get(2)?,
+                size_bytes: row.get(3)?,
+                duration_ms: row.get(4)?,
+                description: row.get(5)?,
+                indexed_at: row.get(6)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn list_media(&self) -> Result<Vec<MediaRow>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, path, kind, size_bytes, duration_ms, description, indexed_at
+                 FROM media_files ORDER BY indexed_at DESC",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(MediaRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                kind: row.get(2)?,
+                size_bytes: row.get(3)?,
+                duration_ms: row.get(4)?,
+                description: row.get(5)?,
+                indexed_at: row.get(6)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn count_media(&self) -> Result<i64> {
+        let mut rows = self
+            .conn
+            .query("SELECT COUNT(*) FROM media_files", ())
+            .await?;
+        Ok(rows.next().await?.map(|r| r.get::<i64>(0)).transpose()?.unwrap_or(0))
+    }
+
+    /// Stream every media file with its embedding bytes, joined with the
+    /// fields needed to render a search hit.
+    pub async fn all_media_with_embeddings(
+        &self,
+    ) -> Result<Vec<(MediaRow, Vec<f32>)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, path, kind, size_bytes, duration_ms, description,
+                        indexed_at, embedding
+                 FROM media_files",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let bytes: Vec<u8> = row.get(7)?;
+            let emb = crate::core::embeddings::bytes_to_embedding(&bytes);
+            out.push((
+                MediaRow {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    kind: row.get(2)?,
+                    size_bytes: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    description: row.get(5)?,
+                    indexed_at: row.get(6)?,
+                },
+                emb,
+            ));
+        }
+        Ok(out)
     }
 
     // ─── GraphRAG (Phase 7) ───────────────────────────────────────────

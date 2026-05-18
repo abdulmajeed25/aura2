@@ -84,3 +84,15 @@ pub struct LinkCandidate {
     pub path: String,
     pub title: String,
 }
+
+/// A row in the `media_files` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaRow {
+    pub id: String,
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: i64,
+    pub duration_ms: Option<i64>,
+    pub description: String,
+    pub indexed_at: i64,
+}

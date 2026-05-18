@@ -153,3 +153,26 @@ export interface StreamingChatTurn {
   answer: GraphRagAnswer;
   status: SsmStatus;
 }
+
+export type MediaKind = "audio" | "video" | "image";
+
+export interface MediaRow {
+  id: string;
+  path: string;
+  kind: MediaKind;
+  size_bytes: number;
+  duration_ms: number | null;
+  description: string;
+  indexed_at: number;
+}
+
+export interface MediaScanReport {
+  ingested: number;
+  skipped: number;
+}
+
+export interface MediaToolsStatus {
+  yt_dlp: string | null;
+  ffmpeg: string | null;
+  ffprobe: string | null;
+}

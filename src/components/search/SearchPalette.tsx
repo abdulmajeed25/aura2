@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
+import { FileImage, FileVideo, Music, Search, X } from "lucide-react";
 import { searchVault } from "@/lib/tauri/search";
 import { useEditorStore } from "@/lib/store/editorStore";
 import type { SearchHit, SearchMode } from "@/types/vault";
@@ -142,11 +142,14 @@ export function SearchPalette({ open, onClose }: Props) {
               }
             >
               <div className="flex items-center gap-2 text-[12px]">
+                <KindIcon blockType={hit.block_type} />
                 <span className="text-[var(--color-text)] truncate">
                   {hit.file_title}
                 </span>
                 <span className="text-[var(--color-text-faint)] truncate">
-                  {hit.file_path}:{hit.line_number + 1}
+                  {hit.file_path}
+                  {!hit.block_type.startsWith("media:") &&
+                    `:${hit.line_number + 1}`}
                 </span>
                 <span className="ml-auto flex items-center gap-1.5 text-[10px] text-[var(--color-text-faint)]">
                   <span className="px-1.5 py-0.5 rounded bg-[var(--color-bg)] border border-[var(--color-border)] uppercase tracking-wider">
@@ -169,6 +172,19 @@ export function SearchPalette({ open, onClose }: Props) {
       </div>
     </div>
   );
+}
+
+function KindIcon({ blockType }: { blockType: string }) {
+  if (blockType === "media:audio") {
+    return <Music size={11} className="text-[var(--color-accent)] shrink-0" />;
+  }
+  if (blockType === "media:video") {
+    return <FileVideo size={11} className="text-[var(--color-accent)] shrink-0" />;
+  }
+  if (blockType === "media:image") {
+    return <FileImage size={11} className="text-[var(--color-accent)] shrink-0" />;
+  }
+  return null;
 }
 
 function ModeTabs({

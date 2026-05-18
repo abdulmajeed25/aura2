@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Brain,
   Eye,
+  Film,
   FolderOpen,
   Network,
   PenLine,
@@ -12,6 +13,7 @@ import {
   Save,
   SplitSquareHorizontal,
 } from "lucide-react";
+import { scanMedia } from "@/lib/tauri/media";
 import { AIChat } from "@/components/ai/AIChat";
 import { CodeMirrorEditor } from "@/components/editor/CodeMirrorEditor";
 import { ReadingView } from "@/components/editor/ReadingView";
@@ -35,6 +37,8 @@ export default function HomePage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [mode, setMode] = useState<ViewMode>("live");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [scanningMedia, setScanningMedia] = useState(false);
+  const [mediaToast, setMediaToast] = useState<string | null>(null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -126,6 +130,39 @@ export default function HomePage() {
             {tree && <FileExplorer tree={tree} />}
           </div>
           <div className="border-t border-[var(--color-border)] p-2 space-y-1">
+            <button
+              type="button"
+              onClick={async () => {
+                setScanningMedia(true);
+                setMediaToast(null);
+                try {
+                  const r = await scanMedia();
+                  setMediaToast(
+                    `Indexed ${r.ingested} media file${r.ingested === 1 ? "" : "s"}` +
+                      (r.skipped > 0 ? ` (${r.skipped} skipped)` : "")
+                  );
+                } catch (e) {
+                  setMediaToast(
+                    e && typeof e === "object" && "message" in e
+                      ? String((e as { message: unknown }).message)
+                      : String(e)
+                  );
+                } finally {
+                  setScanningMedia(false);
+                }
+              }}
+              disabled={scanningMedia}
+              className="w-full inline-flex items-center gap-2 px-3 py-1.5 rounded text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+              title="Scan vault for audio / video / image files"
+            >
+              <Film size={13} />
+              {scanningMedia ? "Scanning…" : "Scan media"}
+            </button>
+            {mediaToast && (
+              <p className="px-3 py-1 text-[10px] text-[var(--color-text-faint)]">
+                {mediaToast}
+              </p>
+            )}
             <button
               type="button"
               onClick={() => setMode((m) => (m === "graph" ? "live" : "graph"))}
