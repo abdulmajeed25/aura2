@@ -156,12 +156,14 @@ async fn handle_tool_call(ctx: &McpContext, req: &Value) -> ToolResult {
         .ok_or_else(|| (-32001, "no vault is open".to_string()))?;
 
     let value = match name {
-        "aura_search" => tool_search(&vault.db, &args).await?,
+        "aura_search" => tool_search(&vault.db, vault.encoder.as_ref(), &args).await?,
         "aura_read_note" => tool_read_note(vault, &args).await?,
         "aura_write_note" => tool_write_note(vault, &args).await?,
         "aura_list_notes" => tool_list_notes(&vault.db).await?,
         "aura_get_backlinks" => tool_get_backlinks(&vault.db, &args).await?,
-        "aura_graph_rag_query" => tool_graph_rag_query(&vault.db, &args).await?,
+        "aura_graph_rag_query" => {
+            tool_graph_rag_query(&vault.db, vault.encoder.as_ref(), &args).await?
+        }
         other => return Err((-32601, format!("unknown tool: {}", other))),
     };
 
@@ -175,7 +177,11 @@ async fn handle_tool_call(ctx: &McpContext, req: &Value) -> ToolResult {
     }))
 }
 
-async fn tool_search(db: &VaultDb, args: &Value) -> ToolResult {
+async fn tool_search(
+    db: &VaultDb,
+    encoder: &dyn crate::core::embeddings::TextEncoder,
+    args: &Value,
+) -> ToolResult {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -189,7 +195,7 @@ async fn tool_search(db: &VaultDb, args: &Value) -> ToolResult {
         .get("limit")
         .and_then(|v| v.as_u64())
         .unwrap_or(20) as usize;
-    let hits = search_blocks(db, query, mode, limit)
+    let hits = search_blocks(db, encoder, query, mode, limit)
         .await
         .map_err(|e| (-32000, e.to_string()))?;
     Ok(serde_json::to_value(hits).unwrap_or(json!([])))
@@ -242,13 +248,17 @@ async fn tool_get_backlinks(db: &VaultDb, args: &Value) -> ToolResult {
     Ok(serde_json::to_value(rows).unwrap_or(json!([])))
 }
 
-async fn tool_graph_rag_query(db: &VaultDb, args: &Value) -> ToolResult {
+async fn tool_graph_rag_query(
+    db: &VaultDb,
+    encoder: &dyn crate::core::embeddings::TextEncoder,
+    args: &Value,
+) -> ToolResult {
     let q = args
         .get("question")
         .and_then(|v| v.as_str())
         .ok_or_else(|| (-32602, "question required".to_string()))?;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-    let answer = run_query(db, q, limit)
+    let answer = run_query(db, encoder, q, limit)
         .await
         .map_err(|e| (-32000, e.to_string()))?;
     Ok(serde_json::to_value(answer).unwrap_or(json!({})))

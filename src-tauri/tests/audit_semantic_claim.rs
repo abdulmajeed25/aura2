@@ -55,6 +55,7 @@ async fn audit_semantic_without_keyword_overlap() {
     // surface B (same concept) before C (unrelated).
     let hits = search_blocks(
         &vault.db,
+        vault.encoder.as_ref(),
         "morning routine deep work calendar",
         SearchMode::Semantic,
         10,

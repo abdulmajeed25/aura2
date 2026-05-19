@@ -7,6 +7,7 @@ use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
 use crate::core::embeddings::{embedding_to_bytes, HashEmbedder, TextEncoder};
+use crate::core::embeddings_onnx::{download::is_present, download::vault_model_dir, OnnxMiniLm};
 use crate::core::hdc::encoder::encode_text as encode_text_hv;
 use crate::core::hdc::HV_DIM;
 use crate::core::link_resolver::scan_wiki_links;
@@ -19,6 +20,13 @@ use crate::utils::error::AuraError;
 pub struct VaultState {
     pub root: PathBuf,
     pub db: Arc<VaultDb>,
+    /// Active text encoder. `OnnxMiniLm` when the model is installed at
+    /// `<root>/.aura/models/all-MiniLM-L6-v2/`, else `HashEmbedder`. The
+    /// choice is made once at [`Self::open`] time so reindexing produces a
+    /// consistent embedding space; switching requires close + reopen.
+    pub encoder: Arc<dyn TextEncoder>,
+    /// Honest label for the active encoder. Mirrors Hard Rule #10.
+    pub encoder_name: &'static str,
 }
 
 impl VaultState {
@@ -31,9 +39,12 @@ impl VaultState {
         }
         let db_path = root.join(".aura").join("aura.db");
         let db = VaultDb::open(&db_path).await?;
+        let (encoder, encoder_name) = pick_encoder(&root);
         Ok(Self {
             root,
             db: Arc::new(db),
+            encoder,
+            encoder_name,
         })
     }
 
@@ -208,8 +219,9 @@ impl VaultState {
             .collect();
         self.db.replace_blocks_for_file(&file_id, &blocks).await?;
 
-        // Generate embeddings for each block and write them to the search index.
-        let encoder = HashEmbedder::new();
+        // Generate embeddings for each block and write them to the search
+        // index, using whichever encoder the vault picked at open time.
+        let encoder = self.encoder.as_ref();
         let embedding_rows: Vec<(String, Vec<u8>, String)> = blocks
             .iter()
             .map(|b| {
@@ -309,6 +321,44 @@ fn block_for_line(map: &[(u32, String)], line: u32) -> Option<String> {
 pub struct ReindexReport {
     pub indexed: u32,
     pub skipped: u32,
+}
+
+/// Decide which `TextEncoder` to install for a freshly-opened vault.
+///
+/// - If `<root>/.aura/models/all-MiniLM-L6-v2/{model.onnx, tokenizer.json}`
+///   are both present, attempt to load `OnnxMiniLm`. On success the real
+///   semantic encoder is active for indexing + search.
+/// - Otherwise (or if the load fails for any reason — e.g. corrupted ONNX,
+///   tract version mismatch) fall back to `HashEmbedder`. The fallback path
+///   logs the failure so the user can see in the trace why the real encoder
+///   didn't activate.
+fn pick_encoder(root: &Path) -> (Arc<dyn TextEncoder>, &'static str) {
+    let model_dir = vault_model_dir(root);
+    if !is_present(&model_dir) {
+        tracing::info!(
+            target: "aura::embed",
+            "no MiniLM model under {}; using HashEmbedder fallback",
+            model_dir.display()
+        );
+        return (Arc::new(HashEmbedder::new()), "HashEmbedder");
+    }
+    match OnnxMiniLm::load(&model_dir) {
+        Ok(m) => {
+            tracing::info!(
+                target: "aura::embed",
+                "loaded all-MiniLM-L6-v2 ONNX from {}",
+                model_dir.display()
+            );
+            (Arc::new(m), "all-MiniLM-L6-v2")
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "aura::embed",
+                "MiniLM load failed ({e}); falling back to HashEmbedder"
+            );
+            (Arc::new(HashEmbedder::new()), "HashEmbedder")
+        }
+    }
 }
 
 /// Resolve symlinks via `canonicalize`, with two fallbacks:

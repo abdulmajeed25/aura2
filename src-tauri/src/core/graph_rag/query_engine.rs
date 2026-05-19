@@ -10,9 +10,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::core::embeddings::{
-    bytes_to_embedding, cosine_similarity, HashEmbedder, TextEncoder,
-};
+use crate::core::embeddings::{bytes_to_embedding, cosine_similarity, TextEncoder};
 use crate::db::sqlite::VaultDb;
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +42,7 @@ pub struct GraphRagAnswer {
 /// Run a GraphRAG query against the community index.
 pub async fn run_query(
     db: &VaultDb,
+    encoder: &dyn TextEncoder,
     question: &str,
     limit: usize,
 ) -> Result<GraphRagAnswer> {
@@ -52,7 +51,6 @@ pub async fn run_query(
         return Ok(empty_answer(q));
     }
 
-    let encoder = HashEmbedder::new();
     let q_vec = encoder.encode(q);
     if q_vec.iter().all(|x| *x == 0.0) {
         return Ok(empty_answer(q));

@@ -37,7 +37,7 @@ pub async fn ingest_media(
     let metadata = std::fs::metadata(&abs)?;
     let description = describe(&path, kind, metadata.len());
     let bytes = std::fs::read(&abs)?;
-    let emb = encode_media(&description, &bytes);
+    let emb = encode_media(vault.encoder.as_ref(), &description, &bytes);
     let emb_bytes = embedding_to_bytes(&emb);
 
     let now = Utc::now().timestamp_millis();

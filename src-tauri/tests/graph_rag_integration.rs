@@ -91,7 +91,7 @@ async fn rebuild_then_query_returns_relevant_community() {
 
     // The fixture has Welcome → Daily → Roadmap all interlinked, so they
     // should collapse into a single community.
-    let answer = run_query(&vault.db, "phase semantic search FTS", 3)
+    let answer = run_query(&vault.db, vault.encoder.as_ref(), "phase semantic search FTS", 3)
         .await
         .unwrap();
     assert!(!answer.communities.is_empty(), "should find at least one community");
@@ -112,7 +112,7 @@ async fn empty_communities_table_yields_empty_answer() {
     let vault = VaultState::open(root.clone()).await.unwrap();
     vault.reindex().await.unwrap();
 
-    let answer = run_query(&vault.db, "anything", 3).await.unwrap();
+    let answer = run_query(&vault.db, vault.encoder.as_ref(), "anything", 3).await.unwrap();
     assert!(answer.communities.is_empty());
     assert_eq!(answer.estimated_tokens, 0);
     assert_eq!(answer.covered_notes, 0);
@@ -175,7 +175,7 @@ async fn context_payload_is_compact_relative_to_full_vault() {
         .collect();
     vault.db.replace_communities(&borrowed).await.unwrap();
 
-    let answer = run_query(&vault.db, "phase markdown live preview", 3)
+    let answer = run_query(&vault.db, vault.encoder.as_ref(), "phase markdown live preview", 3)
         .await
         .unwrap();
     let payload_chars = answer.context_payload.len();

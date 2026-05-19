@@ -433,4 +433,68 @@ the follow-on (Phase 5a-ii).**
 
 ---
 
+### Phase 5a-ii — Active-encoder swap
+
+Threads the encoder choice from Phase 5a all the way through the
+indexing + search + GraphRAG + MCP + media stack. Closes stand-in #1
+for English (BGE-M3 / Arabic remains a separate later gate).
+
+- **What landed:**
+  - `VaultState` gains `encoder: Arc<dyn TextEncoder>` and a
+    `encoder_name: &'static str` honesty label, set once at `open()`
+    time by a new `pick_encoder(root)` helper:
+    - Both model files present + `OnnxMiniLm::load` succeeds → real
+      encoder, `tracing::info!` logs the load.
+    - Anything else → `HashEmbedder` fallback, `tracing::warn!` logs
+      the reason. Hard Rule #10: no false claims of semantic search.
+  - Threaded `&dyn TextEncoder` through:
+    - `core::vault::index_one` (was instantiating `HashEmbedder` per
+      reindex).
+    - `core::search::search_blocks` + `semantic_only` + `hybrid`.
+    - `core::graph_rag::query_engine::run_query`.
+    - `core::multimedia::encode_media`.
+    - `commands::streaming::ssm_step_text` +
+      `streaming_chat::run_query_with_fused`.
+    - `protocols::mcp::tool_search` + `tool_graph_rag_query`.
+  - 6 integration / audit test files updated to pass
+    `vault.encoder.as_ref()` (or `&HashEmbedder::new()` where no
+    vault is open).
+  - Side cleanup: one clippy strict warning in `cognition::hebbian`
+    tests (`0 * n` always-zero), three unused-import warnings in
+    audit tests — all fixed.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings   # clean
+  cargo test                                            # 166 / 0 / 4
+
+  # Real encoder end-to-end (run once on user's machine after a
+  # vault is open):
+  #   tauri invoke download_embeddings_model
+  # …then close + reopen vault. tracing shows
+  # "loaded all-MiniLM-L6-v2 ONNX from <path>".
+  ```
+
+- **Expected output:** clippy strict clean across lib **and**
+  test targets. Suite: 166 passed / 0 failed / 4 ignored (unchanged
+  count vs Phase 5a — the swap is transparent when the model isn't
+  installed, which is the case in test temp dirs).
+
+- **Stand-ins delta:**
+  - **#1 closed for English** (🟡 → 🟢). The real encoder is the
+    default the moment the model is present in the vault's `.aura/
+    models/` directory. BGE-M3 / Arabic is a separate later gate.
+
+- `STOP — request "continue"` before the next phase. With #11 + #10
+  + #8 + #1 (English) closed, the v3 audit's three most-visible gaps
+  are resolved. Open paths:
+  - **Phase 5b** — Anthropic Contextual Retrieval (needs API key).
+  - **Phase 5c** — Hybrid RRF via Tantivy (no external deps).
+  - **Phase 12** — Hamiltonian + FHRR holographic memory.
+  - **Phase 15 starter** — wire `cortex://snapshot` into a reflection
+    writer dropping template-only `.md` files when F spikes.
+
+---
+
 (Future phases appended here.)

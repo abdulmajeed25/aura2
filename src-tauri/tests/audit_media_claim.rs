@@ -6,16 +6,16 @@
 //! bytes that would (in a real model) suggest another concept, gets ranked
 //! purely by the filename.
 
-use std::fs;
-
+use aura_lib::core::embeddings::HashEmbedder;
 use aura_lib::core::multimedia::{describe, encode_media, detect_kind};
 
 #[tokio::test]
 async fn audit_media_encoder_is_filename_dominated() {
+    let enc = HashEmbedder::new();
     // Same description, very different "bytes": ranking is filename-driven.
-    let e_short = encode_media("audio Recordings interview-with-author",
+    let e_short = encode_media(&enc, "audio Recordings interview-with-author",
                                b"FAKE_SHORT_BYTES");
-    let e_long = encode_media("audio Recordings interview-with-author",
+    let e_long = encode_media(&enc, "audio Recordings interview-with-author",
                               &vec![0u8; 1024 * 256]); // 256KB of zeros
     let cos: f32 = e_short.iter().zip(e_long.iter()).map(|(a, b)| a * b).sum();
     println!("audit media: same-desc/diff-bytes cosine = {:.4}", cos);
@@ -25,10 +25,10 @@ async fn audit_media_encoder_is_filename_dominated() {
     // Completely different "audio content" with the SAME description → still
     // very close. This is the user-visible failure of the spec DoD: the model
     // doesn't actually look at the audio.
-    let e_silence = encode_media("audio Recordings interview-with-author",
+    let e_silence = encode_media(&enc, "audio Recordings interview-with-author",
                                  &vec![0u8; 4096]);
     let e_noise: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
-    let e_noisy = encode_media("audio Recordings interview-with-author", &e_noise);
+    let e_noisy = encode_media(&enc, "audio Recordings interview-with-author", &e_noise);
     let cos_audio_blind: f32 = e_silence.iter().zip(e_noisy.iter()).map(|(a, b)| a * b).sum();
     println!("audit media: silence-vs-noise (same desc) cosine = {:.4}", cos_audio_blind);
     assert!(cos_audio_blind > 0.85,

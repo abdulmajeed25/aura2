@@ -25,7 +25,7 @@ pub async fn search_vault(
     };
     let limit = limit.unwrap_or(20) as usize;
 
-    let hits = search_blocks(&vault.db, &query, mode, limit)
+    let hits = search_blocks(&vault.db, vault.encoder.as_ref(), &query, mode, limit)
         .await
         .map_err(AuraError::from)?;
     Ok(hits)

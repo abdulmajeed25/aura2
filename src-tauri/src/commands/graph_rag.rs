@@ -121,7 +121,7 @@ pub async fn graph_rag_query(
     let guard = state.vault.lock().await;
     let vault = guard.as_ref().ok_or(AuraError::NoVault)?;
     let limit = limit.unwrap_or(3) as usize;
-    let answer = run_query(&vault.db, &question, limit)
+    let answer = run_query(&vault.db, vault.encoder.as_ref(), &question, limit)
         .await
         .map_err(AuraError::from)?;
     Ok(answer)

@@ -85,9 +85,9 @@ mod tests {
             reinforce_in_place(&mut w, &x, &x, 0.01).unwrap();
         }
         // w[0,3] and w[3,0] should be positive; w[1,2] should be exactly 0.
-        assert!(w[0 * n + 3] > 0.0, "w[0,3] never grew");
-        assert!(w[3 * n + 0] > 0.0, "w[3,0] never grew");
-        assert_eq!(w[1 * n + 2], 0.0, "w[1,2] grew despite silence");
+        assert!(w[3] > 0.0, "w[0,3] never grew");
+        assert!(w[3 * n] > 0.0, "w[3,0] never grew");
+        assert_eq!(w[n + 2], 0.0, "w[1,2] grew despite silence");
     }
 
     /// Zero presynaptic unit makes no contribution (sparse shortcut).

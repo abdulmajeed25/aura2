@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::core::embeddings::{HashEmbedder, TextEncoder, EMBED_DIM};
+use crate::core::embeddings::EMBED_DIM;
 use crate::core::graph_rag::query_engine::{run_query, GraphRagAnswer};
 use crate::core::ssm::StreamingState;
 use crate::utils::error::{AuraError, CmdResult};
@@ -62,8 +62,10 @@ pub async fn ssm_step_text(
     state: State<'_, AppState>,
     text: String,
 ) -> CmdResult<SsmStatus> {
-    let encoder = HashEmbedder::new();
-    let emb = encoder.encode(&text);
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard.as_ref().ok_or(AuraError::NoVault)?;
+    let emb = vault.encoder.encode(&text);
+    drop(vault_guard);
 
     let mut guard = state.ssm.lock().await;
     let s = guard.get_or_insert_with(|| StreamingState::new(EMBED_DIM));
@@ -98,8 +100,7 @@ pub async fn streaming_chat(
     let vault_guard = state.vault.lock().await;
     let vault = vault_guard.as_ref().ok_or(AuraError::NoVault)?;
 
-    let encoder = HashEmbedder::new();
-    let q_vec = encoder.encode(&question);
+    let q_vec = vault.encoder.encode(&question);
 
     let mut ssm_guard = state.ssm.lock().await;
     let s = ssm_guard.get_or_insert_with(|| StreamingState::new(EMBED_DIM));
@@ -120,9 +121,15 @@ pub async fn streaming_chat(
     };
     drop(ssm_guard);
 
-    let answer = run_query_with_fused(&vault.db, &fused, &question, limit.unwrap_or(3) as usize)
-        .await
-        .map_err(AuraError::from)?;
+    let answer = run_query_with_fused(
+        &vault.db,
+        vault.encoder.as_ref(),
+        &fused,
+        &question,
+        limit.unwrap_or(3) as usize,
+    )
+    .await
+    .map_err(AuraError::from)?;
 
     Ok(StreamingChatTurn { answer, status })
 }
@@ -131,6 +138,7 @@ pub async fn streaming_chat(
 /// fused state-+-question vector) instead of re-encoding `question`.
 async fn run_query_with_fused(
     db: &crate::db::sqlite::VaultDb,
+    encoder: &dyn crate::core::embeddings::TextEncoder,
     fused: &[f32],
     question: &str,
     limit: usize,
@@ -141,12 +149,12 @@ async fn run_query_with_fused(
 
     if fused.iter().all(|x| *x == 0.0) {
         // Fall back to the plain encoder path so we never look up an empty vec.
-        return run_query(db, question, limit).await;
+        return run_query(db, encoder, question, limit).await;
     }
 
     let communities = db.all_communities_with_members().await?;
     if communities.is_empty() {
-        return run_query(db, question, limit).await;
+        return run_query(db, encoder, question, limit).await;
     }
 
     let mut scored: Vec<CommunityHit> = communities

@@ -1,13 +1,9 @@
 //! Audit: idempotency claims and a few sundry promises.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use aura_lib::core::vault::VaultState;
 use aura_lib::protocols::auth::new_token;
-use aura_lib::protocols::mcp::McpContext;
-use tokio::sync::Mutex;
 
 fn fresh_vault() -> PathBuf {
     let root = std::env::temp_dir().join(format!("aura-audit-misc-{}", uuid::Uuid::now_v7()));

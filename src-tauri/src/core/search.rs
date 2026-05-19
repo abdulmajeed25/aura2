@@ -2,7 +2,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::core::embeddings::{cosine_similarity, HashEmbedder, TextEncoder};
+use crate::core::embeddings::{cosine_similarity, TextEncoder};
 use crate::db::sqlite::VaultDb;
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,9 +29,12 @@ pub struct SearchHit {
 const HYBRID_RRF_K: f32 = 60.0;
 const SNIPPET_LEN: usize = 180;
 
-/// Run a search across all blocks in the vault.
+/// Run a search across all blocks in the vault. `encoder` is the
+/// active text encoder picked at `VaultState::open` time; pass
+/// `vault.encoder.as_ref()` to use it.
 pub async fn search_blocks(
     db: &VaultDb,
+    encoder: &dyn TextEncoder,
     query: &str,
     mode: SearchMode,
     limit: usize,
@@ -43,14 +46,18 @@ pub async fn search_blocks(
     }
 
     match mode {
-        SearchMode::Semantic => semantic_only(db, q, limit).await,
+        SearchMode::Semantic => semantic_only(db, encoder, q, limit).await,
         SearchMode::Fts => fts_only(db, q, limit).await,
-        SearchMode::Hybrid => hybrid(db, q, limit).await,
+        SearchMode::Hybrid => hybrid(db, encoder, q, limit).await,
     }
 }
 
-async fn semantic_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-    let encoder = HashEmbedder::new();
+async fn semantic_only(
+    db: &VaultDb,
+    encoder: &dyn TextEncoder,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchHit>> {
     let q_vec = encoder.encode(query);
     if q_vec.iter().all(|x| *x == 0.0) {
         return Ok(Vec::new());
@@ -132,9 +139,16 @@ async fn fts_only(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<SearchH
     Ok(out)
 }
 
-async fn hybrid(db: &VaultDb, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+async fn hybrid(
+    db: &VaultDb,
+    encoder: &dyn TextEncoder,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchHit>> {
     let fts_hits = fts_only(db, query, limit * 3).await.unwrap_or_default();
-    let sem_hits = semantic_only(db, query, limit * 3).await.unwrap_or_default();
+    let sem_hits = semantic_only(db, encoder, query, limit * 3)
+        .await
+        .unwrap_or_default();
 
     let mut rank_map: std::collections::HashMap<String, (f32, Option<SearchHit>, &'static str)> =
         std::collections::HashMap::new();

@@ -25,7 +25,7 @@ use std::path::Path;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::core::embeddings::{HashEmbedder, TextEncoder, EMBED_DIM};
+use crate::core::embeddings::{TextEncoder, EMBED_DIM};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -99,8 +99,11 @@ fn human_bytes(n: u64) -> String {
 /// the same space. The byte half gives non-trivial signal even when two
 /// files share the same filename (e.g. duplicate uploads → identical
 /// fingerprints, different files → divergent ones).
-pub fn encode_media(description: &str, file_bytes: &[u8]) -> Vec<f32> {
-    let text_enc = HashEmbedder::new();
+pub fn encode_media(
+    text_enc: &dyn TextEncoder,
+    description: &str,
+    file_bytes: &[u8],
+) -> Vec<f32> {
     let text_part = text_enc.encode(description);
     let byte_fp = unit_norm(byte_fingerprint(file_bytes));
 
@@ -176,7 +179,12 @@ fn project_into(target: &mut [f32], bytes: &[u8], seed: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::embeddings::HashEmbedder;
     use std::path::PathBuf;
+
+    fn enc() -> HashEmbedder {
+        HashEmbedder::new()
+    }
 
     #[test]
     fn detects_common_extensions() {
@@ -198,8 +206,8 @@ mod tests {
 
     #[test]
     fn encoding_is_deterministic_and_normalised() {
-        let v1 = encode_media("audio jam-session", &[1, 2, 3, 4, 5]);
-        let v2 = encode_media("audio jam-session", &[1, 2, 3, 4, 5]);
+        let v1 = encode_media(&enc(), "audio jam-session", &[1, 2, 3, 4, 5]);
+        let v2 = encode_media(&enc(), "audio jam-session", &[1, 2, 3, 4, 5]);
         assert_eq!(v1, v2);
         let norm = v1.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-3);
@@ -210,10 +218,12 @@ mod tests {
         // Two media files with genuinely different descriptions should land
         // far apart in cosine — that's the user-visible search property.
         let v1 = encode_media(
+            &enc(),
             "audio Recordings jam-session morning routine",
             &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         );
         let v2 = encode_media(
+            &enc(),
             "image Diagrams architecture-overview cluster",
             &[200, 201, 202, 203, 204, 205, 206, 207, 208, 209],
         );
@@ -230,8 +240,8 @@ mod tests {
         // Renaming a file (or duplicating it byte-for-byte) shouldn't yank
         // the embedding to a completely different point — the byte
         // fingerprint is only 15% of the weight by design.
-        let v1 = encode_media("audio Recordings session-a", &[1, 2, 3, 4, 5]);
-        let v2 = encode_media("audio Recordings session-a", &[200, 201, 202, 203, 204]);
+        let v1 = encode_media(&enc(), "audio Recordings session-a", &[1, 2, 3, 4, 5]);
+        let v2 = encode_media(&enc(), "audio Recordings session-a", &[200, 201, 202, 203, 204]);
         let cos: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
         assert!(cos > 0.8, "shared description should keep them close, got {}", cos);
         assert!(cos < 0.999, "byte fingerprint should still distinguish them");

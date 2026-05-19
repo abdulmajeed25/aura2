@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use aura_lib::core::embeddings::{embedding_to_bytes, EMBED_DIM};
+use aura_lib::core::embeddings::{embedding_to_bytes, HashEmbedder, EMBED_DIM};
 use aura_lib::core::multimedia::{describe, detect_kind, encode_media, MediaKind};
 use aura_lib::core::multimedia::tools::ToolsStatus;
 use aura_lib::core::search::{search_blocks, SearchMode};
@@ -68,7 +68,7 @@ async fn ingested_media_shows_up_in_unified_search() {
     let bytes = fs::read(&abs).unwrap();
     let metadata = fs::metadata(&abs).unwrap();
     let description = describe(rel_path, kind, metadata.len());
-    let emb = encode_media(&description, &bytes);
+    let emb = encode_media(&HashEmbedder::new(), &description, &bytes);
     let emb_bytes = embedding_to_bytes(&emb);
 
     let row = MediaRow {
@@ -91,7 +91,7 @@ async fn ingested_media_shows_up_in_unified_search() {
     // Query terms that match the media description should surface the
     // media hit alongside text blocks. We rank in semantic mode so the
     // shared 384-dim space is exercised.
-    let hits = search_blocks(&vault.db, "jam session recording audio", SearchMode::Semantic, 10)
+    let hits = search_blocks(&vault.db, vault.encoder.as_ref(), "jam session recording audio", SearchMode::Semantic, 10)
         .await
         .unwrap();
     assert!(
@@ -115,7 +115,7 @@ async fn delete_removes_media_row() {
     fs::write(&abs, b"FAKE_PNG").unwrap();
     let kind = detect_kind(&abs).unwrap();
     let desc = describe(rel, kind, 8);
-    let emb = encode_media(&desc, b"FAKE_PNG");
+    let emb = encode_media(&HashEmbedder::new(), &desc, b"FAKE_PNG");
     let row = MediaRow {
         id: Uuid::now_v7().to_string(),
         path: rel.to_string(),

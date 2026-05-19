@@ -40,7 +40,7 @@ async fn fts_finds_blocks_with_keyword() {
     let vault = VaultState::open(root.clone()).await.unwrap();
     vault.reindex().await.unwrap();
 
-    let hits = search_blocks(&vault.db, "Tauri", SearchMode::Fts, 10)
+    let hits = search_blocks(&vault.db, vault.encoder.as_ref(), "Tauri", SearchMode::Fts, 10)
         .await
         .unwrap();
     assert!(!hits.is_empty(), "FTS should find the literal token");
@@ -60,6 +60,7 @@ async fn semantic_returns_ranked_results_even_for_non_literal_queries() {
     // and the top score is meaningful (>0).
     let hits = search_blocks(
         &vault.db,
+        vault.encoder.as_ref(),
         "block links backlinks",
         SearchMode::Semantic,
         5,
@@ -79,7 +80,7 @@ async fn hybrid_merges_fts_and_semantic_hits() {
     let vault = VaultState::open(root.clone()).await.unwrap();
     vault.reindex().await.unwrap();
 
-    let hits = search_blocks(&vault.db, "Phase 5 search semantic", SearchMode::Hybrid, 10)
+    let hits = search_blocks(&vault.db, vault.encoder.as_ref(), "Phase 5 search semantic", SearchMode::Hybrid, 10)
         .await
         .unwrap();
     assert!(!hits.is_empty());
@@ -100,7 +101,7 @@ async fn empty_query_returns_empty_results() {
     let vault = VaultState::open(root.clone()).await.unwrap();
     vault.reindex().await.unwrap();
 
-    let hits = search_blocks(&vault.db, "   ", SearchMode::Hybrid, 10)
+    let hits = search_blocks(&vault.db, vault.encoder.as_ref(), "   ", SearchMode::Hybrid, 10)
         .await
         .unwrap();
     assert!(hits.is_empty());
