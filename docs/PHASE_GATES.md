@@ -664,4 +664,82 @@ issue** documented below.
 
 ---
 
+### Phase 7a — Real Leiden replaces LPA
+
+Closes stand-in #2 (LPA → Leiden community detection). The spec's
+"4-level hierarchy" is now algorithmically available (returned by
+`LeidenResult.levels`); the DB schema work to persist multiple levels
+is a separate follow-on.
+
+- **What landed:**
+  - `core/graph_rag/leiden.rs` — full Leiden (Traag, Waltman, van Eck
+    2019):
+    - **Local moving** with explicit modularity gain Δ𝑄, not just
+      label frequency.
+    - **Refinement** — within each community, find sub-partitions
+      whose members are well-connected to each other (prevents the
+      "badly connected community" defect Louvain can produce).
+    - **Aggregation** — collapse each refined community to a
+      super-node and recurse; stops when refinement no longer changes
+      anything or `max_levels` is hit.
+    - Modularity formula `Q = (1/2m) Σ_ij [A_ij − γ k_i k_j / 2m]
+      δ(c_i, c_j)` with resolution γ (default 1.0).
+    - Returns `LeidenResult { levels: Vec<Partition>, modularities:
+      Vec<f64> }`. `final_partition()` is the coarsest level — drop-in
+      for the old `detect_communities` return shape.
+  - `commands/graph_rag.rs::rebuild_graph_rag`:
+    - Swapped `detect_communities` → `leiden(…)` and stored
+      `leiden_result.final_partition()`.
+    - **Encoder mismatch bug fixed** — earlier code embedded community
+      summaries via a hard-coded `HashEmbedder::new()` while the query
+      path used `vault.encoder`; now both use `vault.encoder.as_ref()`
+      so cosine scoring is meaningful regardless of which encoder is
+      active.
+  - `community_detector::detect_communities` (LPA) is **kept** for
+    backward compat + comparison tests.
+
+- **Math-driven TDD (+8 tests, all hand-verified):**
+  - `empty_input_yields_one_empty_level` — empty graph → one empty
+    partition + Q=0.
+  - `isolated_nodes_each_get_their_own_community` — 3 nodes, no edges
+    → 3 communities.
+  - `clique_collapses_to_one_community` — K_5 → 1 community.
+  - `two_cliques_with_bridge_split_into_two_communities` — two
+    K_3 + bridge edge → 2 communities; refinement keeps each clique
+    intact.
+  - `two_cliques_have_meaningful_modularity` — final Q > 0.25.
+  - `same_seed_replays_partition` — deterministic from ChaCha8 seed.
+  - `hierarchy_levels_are_monotone_non_increasing` — three triangles
+    with sparse cross-edges → community count never grows level over
+    level.
+  - `beats_or_matches_lpa_on_two_cliques` — head-to-head: Leiden's
+    final-level modularity ≥ LPA's on the canonical
+    two-cliques-plus-bridge graph.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --lib core::graph_rag::leiden  # 8 passed
+  cargo test                                 # 182 passed, 7 ignored
+  ```
+
+- **Expected output:** clippy strict clean. Leiden suite: 8 passed.
+  Total: 182 passed / 0 failed / 7 ignored (was 174+7 after 5d;
+  +8 from leiden).
+
+- **Stand-ins delta:**
+  - **#2 closed** (🟡 → 🟢) — Leiden algorithm in place, modularity
+    proven ≥ LPA. Multi-level DB persistence remains a follow-on.
+
+- `STOP — request "continue"` before the next phase. Open paths:
+  - **Phase 7a-ii** — persist all hierarchy levels in DB so the UI
+    can offer a "zoom out" slider.
+  - **Phase 12** — Hamiltonian fusion + FHRR holographic memory
+    (experimental, telemetry-instrumented).
+  - **Phase 13** — Neuro-symbolic: VSA inference + ILP + Z3 sidecar.
+  - **Phase 19** — Hardened MCP (OAuth Resource Server + RFC 8707).
+
+---
+
 (Future phases appended here.)

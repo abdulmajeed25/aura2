@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::Serialize;
 use tauri::State;
 
-use crate::core::embeddings::{embedding_to_bytes, HashEmbedder, TextEncoder, EMBED_DIM};
-use crate::core::graph_rag::community_detector::detect_communities;
+use crate::core::embeddings::{embedding_to_bytes, EMBED_DIM};
+use crate::core::graph_rag::leiden::leiden;
 use crate::core::graph_rag::query_engine::{run_query, GraphRagAnswer};
 use crate::core::graph_rag::summarizer::{extractive_summary, leading_paragraphs};
 use crate::db::sqlite::ReplaceCommunity;
@@ -37,7 +37,18 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         .map(|(id, p, t)| (id.clone(), (p.clone(), t.clone())))
         .collect();
 
-    let partition = detect_communities(&node_ids, &edges_raw, 30, 0xA1A0_2026_u64);
+    // Phase 7a: real Leiden replaces LPA. We use the coarsest level (the
+    // top of the hierarchy) for the single-level partition the DB schema
+    // currently stores; later phases can persist intermediate levels too.
+    let leiden_result = leiden(
+        &node_ids,
+        &edges_raw,
+        1.0,             // resolution γ
+        4,               // max_levels (matches the spec's "4-level hierarchy")
+        30,              // max_iterations per level
+        0xA1A0_2026_u64, // seed — same as the old LPA call for continuity
+    );
+    let partition = leiden_result.final_partition().clone();
 
     // Group node ids by community.
     let mut by_community: HashMap<u32, Vec<String>> = HashMap::new();
@@ -45,8 +56,10 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         by_community.entry(*cid).or_default().push(node_id.clone());
     }
 
-    // For each community, build an extractive summary and its embedding.
-    let encoder = HashEmbedder::new();
+    // Embed community summaries with the **same** encoder the query path
+    // uses, so cosine scoring is meaningful. (Fixed in Phase 7a — the
+    // earlier code hard-coded `HashEmbedder::new()` here.)
+    let encoder = vault.encoder.as_ref();
     let mut payloads: Vec<OwnedReplaceCommunity> = Vec::with_capacity(by_community.len());
     for members in by_community.values() {
         let mut entries: Vec<(String, String)> = Vec::with_capacity(members.len());
