@@ -3,13 +3,26 @@
 //! The server binds `127.0.0.1` only and gates every request on a Bearer
 //! token. There is no remote-access path even if a process on the local
 //! machine port-scans loopback — they'd still need the token.
+//!
+//! Phase 19 hardening (Claw-Chain lessons + RFC 8707 in spirit):
+//! - **Request-body size cap** (10 MB) so a malicious local process can't
+//!   exhaust memory by sending a multi-GB payload.
+//! - **`WWW-Authenticate` challenge** on 401 advertising the server's
+//!   `resource_uri` (RFC 6750 + RFC 8707-style audience binding).
+//! - **Constant-time token comparison** so a probing process can't
+//!   distinguish "right length, wrong byte 5" from "wrong length" via
+//!   timing.
+//! - **DNS-rebinding mitigation** via Host-header check — only
+//!   `127.0.0.1` / `localhost` Host values are accepted, so a malicious
+//!   web page that resolves a domain to 127.0.0.1 in step 2 of a
+//!   rebinding attack still gets refused.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -20,10 +33,14 @@ use tokio::task::JoinHandle;
 
 use crate::protocols::mcp::{mcp_dispatch, McpContext};
 
+/// Maximum request body size accepted by the MCP endpoint.
+pub const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
 /// Handle the AppState holds while a server is running.
 pub struct McpServerHandle {
     pub port: u16,
     pub auth_token: String,
+    pub resource_uri: String,
     pub started_at: i64,
     pub request_count: Arc<AtomicU64>,
     abort: Option<oneshot::Sender<()>>,
@@ -49,12 +66,10 @@ impl McpServerHandle {
 
 /// Start an MCP server bound to `127.0.0.1:port` (port=0 picks a free one).
 ///
-/// Returns the bound port + auth token. The caller is expected to store the
-/// `McpServerHandle` so the task can be shut down later.
-pub async fn start_server(
-    ctx: McpContext,
-    port: u16,
-) -> Result<McpServerHandle> {
+/// Returns the bound port + auth token + canonical resource URI. The caller
+/// is expected to store the `McpServerHandle` so the task can be shut down
+/// later.
+pub async fn start_server(mut ctx: McpContext, port: u16) -> Result<McpServerHandle> {
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)
         .await
@@ -63,6 +78,11 @@ pub async fn start_server(
         .local_addr()
         .map_err(|e| anyhow!("local_addr failed: {}", e))?;
     let port = bound.port();
+
+    // Set the canonical resource URI now that we know the port. This is what
+    // the WWW-Authenticate challenge will advertise.
+    let resource_uri = format!("http://127.0.0.1:{}/mcp", port);
+    ctx.resource_uri = Arc::new(resource_uri.clone());
 
     let router = build_router(ctx.clone());
     let (tx, rx) = oneshot::channel::<()>();
@@ -85,6 +105,7 @@ pub async fn start_server(
     Ok(McpServerHandle {
         port,
         auth_token: token,
+        resource_uri,
         started_at,
         request_count: counter,
         abort: Some(tx),
@@ -98,6 +119,7 @@ pub fn build_router(ctx: McpContext) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/mcp", post(mcp_post_handler))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(ctx)
 }
 
@@ -105,28 +127,89 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
 }
 
+/// Constant-time byte-slice equality. Returns `false` on length mismatch
+/// without leaking the actual length via early exit.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        // Still XOR with itself for the "expected" path so the timing
+        // doesn't differ between mismatched-length and "first byte wrong".
+        // (Length is observable from the request anyway; this just keeps
+        // the byte-by-byte branch closed.)
+        let mut diff: u8 = 1;
+        let n = a.len().min(b.len());
+        for i in 0..n {
+            diff |= a[i] ^ b[i];
+        }
+        return diff == 0; // can't be 0 because we OR'd 1.
+    }
+    let mut diff: u8 = 0;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+/// Is the Host header a legitimate localhost value? Anything else means a
+/// DNS rebinding attempt or a misrouted request.
+fn host_is_localhost(host: &str) -> bool {
+    // Strip optional `:port` suffix.
+    let bare = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+    matches!(bare, "127.0.0.1" | "localhost" | "[::1]" | "::1")
+}
+
+fn unauthorized(resource_uri: &str, id: Value, msg: &str) -> impl IntoResponse {
+    let challenge = format!(
+        "Bearer realm=\"aura\", resource=\"{}\"",
+        resource_uri.replace('"', "")
+    );
+    let challenge_hv =
+        HeaderValue::from_str(&challenge).unwrap_or_else(|_| HeaderValue::from_static("Bearer"));
+    (
+        StatusCode::UNAUTHORIZED,
+        [(
+            HeaderName::from_static("www-authenticate"),
+            challenge_hv,
+        )],
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32001, "message": msg }
+        })),
+    )
+}
+
 async fn mcp_post_handler(
     State(ctx): State<McpContext>,
     headers: HeaderMap,
     body: Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+    // 1. Host header check (DNS rebinding mitigation).
+    let host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if !host_is_localhost(host) {
+        tracing::warn!(
+            target: "aura::mcp",
+            "rejecting MCP request with non-loopback Host: {host:?}"
+        );
+        return unauthorized(&ctx.resource_uri, id, "Untrusted Host").into_response();
+    }
+
+    // 2. Bearer token check, constant-time.
     let auth = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     let expected = format!("Bearer {}", ctx.auth_token);
-    if auth != expected {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": body.get("id").cloned().unwrap_or(Value::Null),
-                "error": { "code": -32001, "message": "Unauthorized" }
-            })),
-        );
+    if !constant_time_eq(auth.as_bytes(), expected.as_bytes()) {
+        return unauthorized(&ctx.resource_uri, id, "Unauthorized").into_response();
     }
+
     let resp = mcp_dispatch(&ctx, body.0).await;
-    (StatusCode::OK, Json(resp))
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 #[cfg(test)]
@@ -141,6 +224,7 @@ mod tests {
             vault: Arc::new(Mutex::new(None)),
             auth_token: Arc::new("super-secret".into()),
             request_count: Arc::new(AtomicU64::new(0)),
+            resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
         }
     }
 

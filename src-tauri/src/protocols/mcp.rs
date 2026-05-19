@@ -26,6 +26,11 @@ pub struct McpContext {
     pub vault: Arc<Mutex<Option<VaultState>>>,
     pub auth_token: Arc<String>,
     pub request_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Resource indicator (RFC 8707-style) advertised in the
+    /// `WWW-Authenticate: Bearer realm="aura", resource="…"` challenge.
+    /// Set to the canonical `http://127.0.0.1:<port>/mcp` URL by
+    /// `start_server` after the port has been chosen.
+    pub resource_uri: Arc<String>,
 }
 
 const PROTOCOL_VERSION: &str = "2025-03-26";
@@ -209,7 +214,16 @@ async fn tool_read_note(vault: &VaultState, args: &Value) -> ToolResult {
     let abs = vault
         .resolve(path)
         .map_err(|e| (-32602, e.to_string()))?;
-    let content = std::fs::read_to_string(&abs).map_err(|e| (-32000, e.to_string()))?;
+    // Atomic check-then-use (Claw-Chain mitigation): open the file once,
+    // refuse to follow a symlink on the final component, then read from the
+    // resulting FD. `vault.resolve` already canonicalised inner symlinks +
+    // verified the canonical path stays under vault root in Phase 1; this
+    // `O_NOFOLLOW` (on Unix) closes the post-resolve symlink-swap window.
+    use std::io::Read;
+    let mut file = open_no_follow_read(&abs).map_err(|e| (-32000, e.to_string()))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "path": path, "content": content }))
 }
 
@@ -226,12 +240,61 @@ async fn tool_write_note(vault: &VaultState, args: &Value) -> ToolResult {
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| (-32000, e.to_string()))?;
     }
-    std::fs::write(&abs, content).map_err(|e| (-32000, e.to_string()))?;
+    // Atomic check-then-use on write: O_NOFOLLOW on the final component so
+    // an attacker who manages to swap `abs` with a symlink between
+    // `resolve()` and the write can't redirect the write target.
+    use std::io::Write;
+    let mut file = open_no_follow_write(&abs).map_err(|e| (-32000, e.to_string()))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| (-32000, e.to_string()))?;
+    file.flush().map_err(|e| (-32000, e.to_string()))?;
+    drop(file);
     vault
         .index_one(&abs)
         .await
         .map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "path": path, "bytes_written": content.len() }))
+}
+
+/// Open for read, refusing to follow a symlink on the final component on
+/// Unix. Windows: `O_NOFOLLOW` isn't a thing — fall through to the regular
+/// open, which is fine because the Phase 1 `resolve` already canonicalised
+/// every inner segment.
+fn open_no_follow_read(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc_o_nofollow());
+    }
+    opts.open(p)
+}
+
+fn open_no_follow_write(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc_o_nofollow());
+    }
+    opts.open(p)
+}
+
+/// `O_NOFOLLOW` value, inlined per-arch so we don't take a libc dependency.
+/// Values from the Linux + macOS UAPI headers; all targets Aura currently
+/// builds for use one of these two.
+#[cfg(unix)]
+const fn libc_o_nofollow() -> i32 {
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    {
+        0x0100
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+    {
+        0o400_000
+    }
 }
 
 async fn tool_list_notes(db: &VaultDb) -> ToolResult {
@@ -273,6 +336,7 @@ mod tests {
             vault: Arc::new(Mutex::new(None)),
             auth_token: Arc::new("test-token".into()),
             request_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
         }
     }
 

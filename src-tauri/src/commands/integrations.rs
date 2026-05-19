@@ -42,6 +42,9 @@ pub async fn start_mcp_server(
         vault: state.vault.clone(),
         auth_token: Arc::new(token.clone()),
         request_count: Arc::new(AtomicU64::new(0)),
+        // `start_server` overwrites this with the canonical URL once it
+        // knows the bound port.
+        resource_uri: Arc::new(String::new()),
     };
 
     let handle = start_server(ctx, port.unwrap_or(47820))

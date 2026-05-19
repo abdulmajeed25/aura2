@@ -102,6 +102,7 @@ async fn tools_list_returns_aura_tools_against_open_vault() {
         vault: vault_slot.clone(),
         auth_token: Arc::new(token.clone()),
         request_count: Arc::new(AtomicU64::new(0)),
+        resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
     };
     let handle = start_server(ctx, 0).await.unwrap();
     let url = format!("http://127.0.0.1:{}/mcp", handle.port);
@@ -139,6 +140,7 @@ async fn search_tool_call_returns_hits_from_real_vault() {
         vault: vault_slot.clone(),
         auth_token: Arc::new(token.clone()),
         request_count: Arc::new(AtomicU64::new(0)),
+        resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
     };
     let handle = start_server(ctx, 0).await.unwrap();
     let url = format!("http://127.0.0.1:{}/mcp", handle.port);
@@ -178,6 +180,7 @@ async fn read_note_tool_returns_file_contents() {
         vault: vault_slot.clone(),
         auth_token: Arc::new(token.clone()),
         request_count: Arc::new(AtomicU64::new(0)),
+        resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
     };
     let handle = start_server(ctx, 0).await.unwrap();
     let url = format!("http://127.0.0.1:{}/mcp", handle.port);

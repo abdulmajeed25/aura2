@@ -742,4 +742,83 @@ is a separate follow-on.
 
 ---
 
+### Phase 19 — Hardened MCP (Claw-Chain mitigations + RFC 8707 spirit)
+
+Closes stand-in #19. The MCP endpoint now passes the spec's "Claw-Chain
+checklist" (Part 14): bound to loopback, fresh token per restart,
+body-size cap, audience-bound 401 challenge, constant-time auth, DNS
+rebinding refused, atomic file ops on tool calls.
+
+- **What landed:**
+  - `protocols/server.rs`:
+    - `DefaultBodyLimit::max(MAX_BODY_BYTES = 10 MiB)` layered on the
+      router. Oversized requests get 413 or the connection is closed
+      (BrokenPipe) before the dispatch even runs.
+    - `mcp_post_handler` now performs three gates in order:
+      1. Host-header check. Only `127.0.0.1` / `localhost` / `::1`
+         (with optional `:port`) pass — DNS-rebinding refused.
+      2. Constant-time bearer-token compare via a XOR-fold helper. No
+         early exit, no timing side channel.
+      3. JSON-RPC dispatch.
+    - 401 responses include `WWW-Authenticate: Bearer realm="aura",
+      resource="http://127.0.0.1:<port>/mcp"` — clients can discover
+      the audience-bound resource indicator (RFC 6750 + RFC 8707
+      spirit).
+    - `McpContext` gains `resource_uri: Arc<String>`; set by
+      `start_server` once the port is bound. `McpServerHandle` also
+      exposes it.
+  - `protocols/mcp.rs::tool_read_note` and `tool_write_note`:
+    - Replaced `std::fs::read_to_string(path)` / `std::fs::write(path)`
+      with a custom `open_no_follow_*` helper that uses
+      `OpenOptions::custom_flags(O_NOFOLLOW)` on Unix. The Phase 1
+      `resolve()` canonicalises every inner segment; `O_NOFOLLOW`
+      closes the *post-resolve* swap window on the final component
+      (the Claw-Chain "atomic check-then-use" lesson).
+    - `O_NOFOLLOW` constants inlined per-arch (`0o400_000` Linux,
+      `0x0100` macOS/iOS/FreeBSD) so we don't pull `libc` for one
+      constant.
+
+- **Math-driven TDD (+4 hardening tests):**
+  - `phase19_unauthorized_advertises_resource_via_www_authenticate` —
+    401 response contains `WWW-Authenticate:` with `resource="http://127.0.0.1:<port>"`.
+  - `phase19_rejects_non_loopback_host_header` — `Host: evil.example.com`
+    + valid token → 401.
+  - `phase19_localhost_host_with_valid_token_passes` — sanity
+    regression-guard: localhost + valid token → 200.
+  - `phase19_rejects_oversized_body` — 12 MB payload → 413 OR
+    BrokenPipe (server closes mid-upload, either is "cap fired").
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test                                              # 186 passed, 7 ignored
+  ```
+
+- **Expected output:** clippy strict clean across lib + tests. Total
+  suite: 186 passed / 0 failed / 7 ignored (was 182+7 after Phase 7a;
+  +4 from the Phase 19 hardening tests).
+
+- **Stand-ins delta:**
+  - **#19 closed** (🟡 → 🟢) — all Claw-Chain checklist items in.
+    Full OAuth-flow RFC 8707 (separate authorization-server endpoint
+    issuing audience-bound tokens) is **out of scope** because the
+    threat model is local Bearer-on-loopback, not third-party
+    delegation. The audience indicator in the challenge is the
+    spirit of RFC 8707 applied to the actual threat.
+
+- `STOP — request "continue"` before the next phase. Six stand-ins
+  closed: #1 (English), #2, #8, #10, #11, #19. Remaining 🔴/🟡:
+  GraphRAG summaries/answers (need Claude), SSM swap (need Mamba
+  ONNX), media encoder + URL ingest (need Whisper/SigLIP/yt-dlp),
+  experimental Hamiltonian + FHRR + neuro-symbolic phases, agent
+  orchestration / Mem0 / Letta integrations, multilingual model
+  (needs the user's promised upload), GUI launch (needs a display).
+
+  Among those, **Phase 12** (Hamiltonian + FHRR holographic memory)
+  is the next purely-buildable item — experimental but no external
+  deps, no API key, no model file.
+
+---
+
 (Future phases appended here.)

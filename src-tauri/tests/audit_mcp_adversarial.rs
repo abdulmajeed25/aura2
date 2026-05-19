@@ -51,6 +51,7 @@ fn ctx(token: &str) -> McpContext {
         vault: Arc::new(Mutex::new(None)),
         auth_token: Arc::new(token.into()),
         request_count: Arc::new(AtomicU64::new(0)),
+        resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
     }
 }
 
@@ -189,6 +190,7 @@ async fn audit_tool_call_path_traversal_is_blocked() {
         vault: Arc::new(Mutex::new(Some(vault))),
         auth_token: Arc::new(token.into()),
         request_count: Arc::new(AtomicU64::new(0)),
+        resource_uri: Arc::new("http://127.0.0.1:0/mcp".into()),
     };
     let handle = start_server(c, 0).await.unwrap();
     let addr = format!("127.0.0.1:{}", handle.port);
@@ -236,4 +238,172 @@ async fn audit_tool_call_path_traversal_is_blocked() {
         "expected an error response for traversal attempt, got: {}",
         parsed
     );
+}
+
+// ---------- Phase 19 hardening tests ---------------------------------
+
+/// Raw POST that lets the caller override the Host header. Used by the
+/// DNS-rebinding test.
+async fn raw_with_host(
+    addr: &str,
+    host_header: &str,
+    headers: &[&str],
+    body: &str,
+) -> std::io::Result<(u16, String)> {
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        host_header,
+        body.len()
+    );
+    for h in headers {
+        req.push_str(h);
+        req.push_str("\r\n");
+    }
+    req.push_str("\r\n");
+    req.push_str(body);
+    stream.write_all(req.as_bytes()).await?;
+    stream.flush().await?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await?;
+    let s = String::from_utf8_lossy(&buf).to_string();
+    let status: u16 = s
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    Ok((status, s))
+}
+
+/// 401 responses must carry a `WWW-Authenticate` challenge advertising the
+/// server's resource URI (RFC 6750 + RFC 8707 spirit).
+#[tokio::test]
+async fn phase19_unauthorized_advertises_resource_via_www_authenticate() {
+    let c = ctx("expected-token");
+    let handle = start_server(c, 0).await.unwrap();
+    let port = handle.port;
+
+    let body = serde_json::to_string(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "ping"
+    }))
+    .unwrap();
+    // No Authorization header → 401 + WWW-Authenticate.
+    let (status, response) = raw(
+        &format!("127.0.0.1:{}", port),
+        &["Content-Type: application/json"],
+        &body,
+    )
+    .await
+    .unwrap();
+    handle.shutdown().await;
+    assert_eq!(status, 401, "expected 401 unauthorised");
+    let lower = response.to_lowercase();
+    assert!(
+        lower.contains("www-authenticate:"),
+        "WWW-Authenticate header missing from response:\n{response}"
+    );
+    assert!(
+        response.contains("resource=\"http://127.0.0.1:"),
+        "WWW-Authenticate must carry resource indicator:\n{response}"
+    );
+}
+
+/// A request with a non-loopback Host header (DNS-rebinding) is rejected
+/// even when the bearer token is valid.
+#[tokio::test]
+async fn phase19_rejects_non_loopback_host_header() {
+    let c = ctx("expected-token");
+    let handle = start_server(c, 0).await.unwrap();
+    let port = handle.port;
+
+    let body = serde_json::to_string(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "ping"
+    }))
+    .unwrap();
+    let (status, _) = raw_with_host(
+        &format!("127.0.0.1:{}", port),
+        "evil.example.com",
+        &[
+            "Authorization: Bearer expected-token",
+            "Content-Type: application/json",
+        ],
+        &body,
+    )
+    .await
+    .unwrap();
+    handle.shutdown().await;
+    assert_eq!(status, 401, "non-loopback Host header should be rejected");
+}
+
+/// Sanity: a request with the canonical Host AND the right token DOES go
+/// through (regression-guard the host check).
+#[tokio::test]
+async fn phase19_localhost_host_with_valid_token_passes() {
+    let c = ctx("expected-token");
+    let handle = start_server(c, 0).await.unwrap();
+    let port = handle.port;
+
+    let body = serde_json::to_string(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "ping"
+    }))
+    .unwrap();
+    let (status, _) = raw(
+        &format!("127.0.0.1:{}", port),
+        &[
+            "Authorization: Bearer expected-token",
+            "Content-Type: application/json",
+        ],
+        &body,
+    )
+    .await
+    .unwrap();
+    handle.shutdown().await;
+    assert_eq!(status, 200, "localhost + valid token must pass");
+}
+
+/// Body larger than the configured cap is rejected without OOMing the
+/// server. We send a 12 MB payload (cap is 10 MB).
+///
+/// Either outcome counts as the cap firing:
+///   - `413 Payload Too Large` HTTP response — the cleanest signal.
+///   - `BrokenPipe` on write — axum has closed the connection before our
+///     client finished streaming the 12 MB body. Also a hard "rejected"
+///     signal, and the cheaper path for axum to take.
+/// The bad outcome would be a `200 OK` (cap silently absent) or the
+/// server hanging / panicking.
+#[tokio::test]
+async fn phase19_rejects_oversized_body() {
+    let c = ctx("expected-token");
+    let handle = start_server(c, 0).await.unwrap();
+    let port = handle.port;
+
+    let big = "a".repeat(12 * 1024 * 1024);
+    let body = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"big\":\"{}\"}}",
+        big
+    );
+    let outcome = raw(
+        &format!("127.0.0.1:{}", port),
+        &[
+            "Authorization: Bearer expected-token",
+            "Content-Type: application/json",
+        ],
+        &body,
+    )
+    .await;
+    handle.shutdown().await;
+
+    match outcome {
+        Ok((status, _)) => {
+            assert_eq!(
+                status, 413,
+                "oversized body with a successful round-trip should be 413"
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // Server closed the connection mid-upload — cap fired.
+        }
+        Err(e) => panic!("unexpected I/O error from oversized POST: {e}"),
+    }
 }
