@@ -5,6 +5,7 @@ use tauri::State;
 
 use crate::core::embeddings::{embedding_to_bytes, EMBED_DIM};
 use crate::core::multimedia::tools::ToolsStatus;
+use crate::core::multimedia::url_ingest::{download_url, DownloadOptions};
 use crate::core::multimedia::{describe, detect_kind, encode_media};
 use crate::db::schemas::MediaRow;
 use crate::utils::error::{AuraError, CmdResult};
@@ -114,6 +115,69 @@ pub async fn scan_media(state: State<'_, AppState>) -> CmdResult<ScanReport> {
         }
     }
     Ok(ScanReport { ingested, skipped })
+}
+
+/// Phase 9(a): download a media URL via yt-dlp, ffprobe its duration,
+/// then ingest the resulting file via the existing local-media pipeline.
+///
+/// Files land in `<vault>/Media/inbox/` so the user sees the result
+/// alongside their normal vault content. The directory is created on
+/// first use.
+#[tauri::command]
+pub async fn ingest_url(
+    state: State<'_, AppState>,
+    url: String,
+    trust_self_signed: Option<bool>,
+) -> CmdResult<MediaRow> {
+    let (vault_root, encoder, db) = {
+        let guard = state.vault.lock().await;
+        let v = guard.as_ref().ok_or(AuraError::NoVault)?;
+        (v.root.clone(), v.encoder.clone(), v.db.clone())
+    };
+    let inbox = vault_root.join("Media").join("inbox");
+
+    let opts = DownloadOptions {
+        trust_self_signed: trust_self_signed.unwrap_or(false),
+    };
+    let dl = download_url(&url, &inbox, opts)
+        .await
+        .map_err(|e| AuraError::Other(format!("url ingest: {e}")))?;
+
+    // Compute the vault-relative path of the downloaded file.
+    let rel = dl
+        .path
+        .strip_prefix(&vault_root)
+        .map_err(|_| AuraError::PathOutsideVault(dl.path.display().to_string()))?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let kind = detect_kind(&dl.path)
+        .ok_or_else(|| AuraError::InvalidPath(format!("not a media file: {}", rel)))?;
+    let description = describe(&rel, kind, dl.size_bytes);
+    let bytes = std::fs::read(&dl.path)?;
+    let emb = encode_media(encoder.as_ref(), &description, &bytes);
+    let emb_bytes = embedding_to_bytes(&emb);
+
+    let now = Utc::now().timestamp_millis();
+    let existing = db.get_media_by_path(&rel).await.map_err(AuraError::from)?;
+    let id = existing
+        .as_ref()
+        .map(|r| r.id.clone())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let row = MediaRow {
+        id,
+        path: rel,
+        kind: kind.as_str().to_string(),
+        size_bytes: dl.size_bytes as i64,
+        duration_ms: dl.duration_ms,
+        description,
+        indexed_at: now,
+    };
+    db.upsert_media(&row, &emb_bytes, EMBED_DIM as i64)
+        .await
+        .map_err(AuraError::from)?;
+    Ok(row)
 }
 
 #[tauri::command]

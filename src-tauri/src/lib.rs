@@ -69,6 +69,7 @@ pub fn run() {
             commands::streaming::streaming_chat,
             commands::media::media_tools_status,
             commands::media::ingest_media,
+            commands::media::ingest_url,
             commands::media::scan_media,
             commands::media::list_media,
             commands::media::delete_media,

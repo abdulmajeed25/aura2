@@ -920,4 +920,74 @@ the "experimental, telemetry-instrumented" framing.
 
 ---
 
+### Phase 9(a) — Real URL ingest via yt-dlp + ffmpeg
+
+Closes stand-in #7. Both binaries are installed in this build sandbox
+via `pip install yt-dlp` and `apt install ffmpeg`; the integration is
+end-to-end verified against a stable GitHub-hosted Big Buck Bunny clip.
+
+- **What landed:**
+  - `core/multimedia/url_ingest.rs`:
+    - `validate_url(url)` rejects anything that isn't `http(s)://`
+      (refuses `file://`, `ftp://`, `javascript:`, null bytes).
+    - `download_url(url, dest_dir, opts)` snapshots `dest_dir` before
+      spawn, runs `yt-dlp --no-playlist --no-warnings --no-progress
+      --no-call-home -P <dest> -o "%(title)s.%(ext)s" <url>`, and
+      identifies the new file by set-diff after.
+    - `probe_metadata(path)` runs `ffprobe -show_entries
+      format=duration,format_name` and returns `(Option<duration_ms>,
+      Option<format_name>)` — both `None` on failure so a missing
+      probe doesn't break ingestion.
+    - `DownloadOptions { trust_self_signed }` adds
+      `--no-check-certificate` for sandbox / corporate-CA setups.
+      Defaults to `false` in production.
+  - `commands::media::ingest_url(url, trust_self_signed?)` Tauri
+    command. Downloads into `<vault>/Media/inbox/`, then runs the
+    existing local-media pipeline (`detect_kind` → `encode_media`
+    with the active `vault.encoder` → `upsert_media`). `duration_ms`
+    persists into the DB row.
+  - `lib.rs` handler list extended: 46 → 47 commands.
+
+- **Math-driven TDD (+2 unit + 1 live smoke):**
+  - `rejects_non_http_url` — `file://`, `ftp://`, `javascript:`, empty
+    all return Err; `http://`, `https://` pass.
+  - `rejects_null_byte_in_url` — `"https://example.com\0/x"` → Err.
+  - `url_ingest_smoke` (`#[ignore]`, run with `--ignored`) — downloads
+    a 5.5 MB Big Buck Bunny clip from `raw.githubusercontent.com/
+    mediaelement/mediaelement-files`, verifies file > 1 MB and
+    `30_000 < duration_ms < 90_000`. Trusts self-signed CAs because
+    the sandbox sits behind a proxy with a self-signed root.
+
+- **Reproduce:**
+  ```bash
+  # One-time host setup:
+  pip install yt-dlp
+  sudo apt install ffmpeg
+
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings   # clean
+  cargo test                                            # 202 / 0 / 8
+  cargo test --lib core::multimedia::url_ingest::tests::url_ingest_smoke -- --ignored
+  ```
+
+- **Expected output:** clippy strict clean. Total: 202 passed / 0
+  failed / 8 ignored (was 200+7 after Phase 12; +2 unit tests, +1
+  ignored live-network smoke test). The smoke test passes when run
+  with `--ignored` and `yt-dlp` + `ffprobe` on PATH.
+
+- **Stand-ins delta:**
+  - **#7 closed** (🔴 → 🟢) — URL ingest wired end-to-end.
+
+- `STOP — request "continue"` before the next phase. Open paths
+  in priority order:
+  - **Phase 14(a)** — Z3 sidecar + VSA inference kernel
+    (Python sidecar allowed, z3-solver installed and tested).
+  - **Phase 16(a)** — Agent runtime + Anthropic Skills loader.
+  - **Phase 7a-ii** — persist Leiden hierarchy levels in DB.
+  - **Phase 12(b)** — wire Hamiltonian into `Cortex::tick`.
+  - **Phase 5/8/9 model swaps** — search GitHub for tract-compatible
+    multilingual MiniLM, Phi-3 mini, Whisper-tiny ONNX.
+
+---
+
 (Future phases appended here.)

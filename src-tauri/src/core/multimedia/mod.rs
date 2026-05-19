@@ -19,6 +19,7 @@
 //! struct, and re-`scan_media`. No schema change is required.
 
 pub mod tools;
+pub mod url_ingest;
 
 use std::path::Path;
 
