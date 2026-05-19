@@ -821,4 +821,103 @@ rebinding refused, atomic file ops on tool calls.
 
 ---
 
+### Phase 12 — Hamiltonian leapfrog + FHRR holographic memory (kernels)
+
+Lands the two experimental kernels stand-ins #12 and #13 cite. Both are
+pure-math, no external deps, no API key. The integration into the cortex
+loop + the spec's 30-day retention telemetry come in a later gate per
+the "experimental, telemetry-instrumented" framing.
+
+- **What landed:**
+  - `cognition/hamiltonian.rs` — symplectic leapfrog:
+    - `leapfrog_step(x, p, grad_v, dt)` runs the three-stage update
+      `p ← p − (dt/2)·∇V(x); x ← x + dt·p; p ← p − (dt/2)·∇V(x')` in
+      place. `grad_v` is a closure so any potential plugs in.
+    - `energy(x, p, V) → f32` reports `H = ½‖p‖² + V(x)`.
+    - `Result<(), HamError>` for shape mismatch / bad `dt` — Hard
+      Rule #4, no panics.
+  - `cognition/holographic.rs` — FHRR algebra in the frequency
+    domain:
+    - `Cmplx { re, im }` local struct (no `num_complex` dep) with
+      `cmul`, `cadd`, `conj`, `modulus`, `from_phase`.
+    - `FhrrVec`: `random(dim, seed)` (uniform random phases),
+      `bind` (element-wise complex multiply), `unbind`
+      (multiply by conjugate), `bundle` (sum + per-component
+      re-normalise to unit modulus), `similarity`
+      (`Re(⟨A, B*⟩) / D`).
+    - No FFT needed — we represent vectors in the frequency domain,
+      where circular convolution = element-wise multiplication.
+
+- **Math-driven TDD (+14 tests):**
+  - Hamiltonian (6):
+    - `free_particle_one_step_exact` — V=0, hand-computed
+      `(x, p) = (0.1, 1.0)` after one step from `(0, 1)` at `dt=0.1`.
+    - `harmonic_energy_is_bounded_over_long_run` — V = ½ω²x²,
+      ω=1, 10 000 steps at dt=0.01: max energy drift < 1 % of H₀.
+    - `harmonic_does_not_diverge_at_long_horizon` — 50 000 steps,
+      amplitude² stays within 0.05 of 1.0 (the symplectic-vs-Euler
+      headline).
+    - `multidim_quadratic_energy_bounded` — separable 2-D well,
+      5 000 steps: energy drift < 1 %.
+    - `dim_mismatch_errors` + `bad_dt_errors` — shape / parameter
+      validation returns Err.
+  - FHRR (8):
+    - `random_has_unit_modulus_per_component` — invariant after
+      construction.
+    - `same_seed_replays` — bit-exact determinism.
+    - `bind_preserves_unit_modulus` — invariant after bind.
+    - `similarity_with_self_is_one` — sanity.
+    - `distinct_seeds_are_uncorrelated_at_chance` — for D=4096,
+      `|sim|` < 0.05 (well within the 1/√(2D) ≈ 0.011 noise envelope).
+    - `unbind_recovers_filler_from_role_filler_product` —
+      `unbind(bind(A, B), A)` recovers `B` with sim > 0.999 at
+      D=1024.
+    - `bundle_preserves_similarity_to_components` — sim(bun, comp)
+      > 0.45 for 3 bundled patterns at D=1024 (theoretical 1/√K ≈
+      0.577 with f32 noise).
+    - `role_filler_retrieval_works_under_bundling` —
+      `unbind(bind(K1,V1) ⊞ bind(K2,V2), K1)` is closer to V1 than
+      to V2 by ≥ 0.3 at D=2048; the headline compositional-memory
+      property.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --lib cognition::hamiltonian   # 6 passed
+  cargo test --lib cognition::holographic   # 8 passed
+  cargo test                                 # 200 passed, 7 ignored
+  ```
+
+- **Expected output:** clippy strict clean (tests have
+  `#[allow(clippy::needless_borrows_for_generic_args)]` because
+  `leapfrog_step` / `energy` take closures by value, so the `&v`
+  borrow keeps ownership for the loop — a false-positive lint).
+  Total: 200 passed / 0 failed / 7 ignored (was 186+7 after Phase
+  19; +14 from Phase 12).
+
+- **Stand-ins delta:**
+  - **#12 partial** (🔴 → 🟡) — symplectic leapfrog kernel + tests
+    in. The Claude-injected momentum + Hopfield potential fusion in
+    `Cortex::tick`, and the 30-day retention telemetry, are a future
+    gate.
+  - **#13 partial** (🔴 → 🟡) — FHRR algebra + role-filler retrieval
+    in. LanceDB schema columns + the choice to swap or augment
+    bipolar HDC come after telemetry.
+
+- `STOP — request "continue"` before the next phase. Eight stand-ins
+  now have real code shipped: #1 (English), #2, #8, #10, #11, #19
+  fully closed; #12, #13 kernels in pending integration.
+
+  Open paths:
+  - **Phase 13 (a)** — VSA inference kernel (HRR-style algebra
+    queries: "what role connects X to Y?"). Pure code, builds on
+    existing HDC + the new FHRR module. The Z3 sidecar piece needs
+    a sidecar.
+  - **Phase 12 (b)** — wire Hamiltonian step into `Cortex::tick`
+    with telemetry on energy delta per fusion step.
+  - **Phase 7a-ii** — persist Leiden hierarchy levels in DB.
+
+---
+
 (Future phases appended here.)
