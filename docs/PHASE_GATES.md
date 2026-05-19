@@ -336,4 +336,101 @@ Tauri event channel.
 
 ---
 
+### Phase 5a — Real `all-MiniLM-L6-v2` ONNX encoder + download mechanism
+
+Closes the largest gap from the audit: "semantic search" was actually
+lexical hash-feature matching. The real encoder is now in code, fully
+tested against the real model in the build sandbox, with a SHA-256-
+verified download mechanism. **Active-encoder swap during indexing is
+the follow-on (Phase 5a-ii).**
+
+- **Why this approach:** the user asked "can you provide the model
+  file yourself?" — yes, via a vetted GitHub mirror of the Apache-2.0
+  upstream weights (`hunterreid/pool-party-embed-weights`,
+  ~90 MB ONNX + ~712 KB tokenizer). We **do not** commit the blob to
+  git (90 MB binary in version control would bloat clones forever);
+  the loader downloads on first run and SHA-256-verifies. HuggingFace
+  itself is blocked in this build sandbox (`host_not_allowed`); the
+  GitHub mirror is reachable from any environment that can `git clone`
+  from GitHub.
+
+- **What landed:**
+  - New crates in `Cargo.toml`: `tract-onnx = "0.21"` (pure-Rust ONNX
+    runtime — no native libs, builds on every Tauri target),
+    `tokenizers = "0.20"` (HuggingFace tokenizers, pure Rust, `onig`
+    feature for the BERT tokenizer), `reqwest = "0.12"` (rustls,
+    streaming) for the download.
+  - `core/embeddings_onnx/`:
+    - `download.rs` — static `MANIFEST` with file URLs + SHA-256
+      checksums. `download_model(model_dir, progress_callback)`
+      streams each file to a `.download` temp, hashes incrementally,
+      atomically renames on success, deletes on checksum mismatch.
+      `is_present(dir)` and `vault_model_dir(root)` helpers.
+    - `tokenizer.rs` — `MiniLmTokenizer` wraps the HF tokenizer with
+      256-token truncation + `[PAD]` padding so the ONNX graph sees a
+      fixed `[1, 256]` shape.
+    - `embedder.rs` — `OnnxMiniLm` loads `model.onnx`, pins all three
+      input axes to `[1, 256]` so tract can fully optimise the graph,
+      runs the inference, applies attention-weighted mean-pool over
+      the token states, and L2-normalises. Implements
+      `TextEncoder` (the trait already present from v3 — that's the
+      seam the v3 build foresaw).
+  - `commands/embeddings.rs`:
+    - `embeddings_model_status` — `{ name, embed_dim, installed,
+      model_dir }`.
+    - `download_embeddings_model` — runs the download, emits
+      `embeddings://download-progress` events with
+      `{ file, bytes_so_far, bytes_total }`.
+  - `AppState` is unchanged for this gate. New commands registered in
+    `tauri::generate_handler![…]`. Tauri command count: 44 → 46.
+
+- **Verification in the build sandbox:**
+  - Downloaded `model.onnx` (90,445,823 B) and `tokenizer.json`
+    (711,661 B) into `/tmp/aura-model-test/`.
+  - Both SHA-256 hashes match the manifest (`994a58…ede6b` /
+    `da0e79…2c62a0`).
+  - `cargo test --lib core::embeddings_onnx`: 5 passed.
+    - 3 manifest / path / `is_present` unit tests.
+    - 2 integration tests gated on the cached model — `loads_and_encodes`
+      (asserts 384-d unit-norm output) and
+      `semantic_pair_is_closer_than_unrelated_pair` (paraphrase
+      similarity ≈ 0.55 vs off-topic ≈ 0.15, +0.10 margin
+      requirement). CI without the cache silently skips.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps -- -D warnings        # clean
+  cargo test                                    # 166 passed, 4 ignored
+  # Real-encoder smoke test (downloads model):
+  mkdir -p /tmp/aura-model-test
+  curl -sL "https://raw.githubusercontent.com/hunterreid/pool-party-embed-weights/main/model_data/model.onnx" \
+    -o /tmp/aura-model-test/model.onnx
+  curl -sL "https://raw.githubusercontent.com/hunterreid/pool-party-embed-weights/main/model_data/tokenizer.json" \
+    -o /tmp/aura-model-test/tokenizer.json
+  cargo test --lib core::embeddings_onnx::embedder
+  ```
+
+- **Expected output:** clippy clean. Suite: 166 passed / 4 ignored
+  (was 161+4 after 11c; +5 from the new module: 3 unconditional + 2
+  gated on the cached model). Tauri command registry: 46 declared,
+  46 registered.
+
+- **Stand-ins delta:**
+  - **#1 narrowed** — real encoder + tested + download path shipped;
+    `HashEmbedder` remains default during indexing pending the
+    active-encoder swap (Phase 5a-ii). Registry status stays 🟡 with
+    the gap description rewritten to reflect what's actually shipped.
+
+- `STOP — request "continue"` before the next phase. Open paths:
+  - **Phase 5a-ii** — swap the active encoder during indexing
+    (thread `Arc<dyn TextEncoder>` through `AppState`, choose at
+    `open_vault` time based on `is_present`).
+  - **Phase 5b** — Anthropic Contextual Retrieval (needs API key).
+  - **Phase 5c** — Hybrid RRF via Tantivy (no external deps; could go
+    in parallel).
+  - **Phase 12** — Hamiltonian + FHRR holographic memory.
+
+---
+
 (Future phases appended here.)

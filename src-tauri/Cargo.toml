@@ -59,6 +59,18 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# HTTP client for downloading the embeddings model on first run
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# Pure-Rust ONNX runtime for the all-MiniLM-L6-v2 embedder (Phase 5).
+# tract-onnx avoids the C++ ONNX Runtime dependency and is portable to
+# every platform Tauri runs on.
+tract-onnx = { version = "0.21", default-features = false }
+
+# Hugging Face tokenizers (pure Rust). Used to tokenize input text before
+# running it through the MiniLM ONNX graph.
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
 [features]
 # default Tauri custom-protocol feature for production builds
 custom-protocol = ["tauri/custom-protocol"]

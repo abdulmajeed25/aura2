@@ -2,6 +2,7 @@ pub mod agent;
 pub mod block;
 pub mod canvas;
 pub mod cortex;
+pub mod embeddings;
 pub mod file;
 pub mod graph;
 pub mod graph_rag;

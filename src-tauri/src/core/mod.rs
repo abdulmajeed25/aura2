@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod canvas;
 pub mod embeddings;
+pub mod embeddings_onnx;
 pub mod file_watcher;
 pub mod graph_engine;
 pub mod graph_rag;

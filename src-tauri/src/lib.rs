@@ -86,6 +86,8 @@ pub fn run() {
             commands::cortex::stop_cortex,
             commands::cortex::send_observation,
             commands::cortex::cortex_status,
+            commands::embeddings::embeddings_model_status,
+            commands::embeddings::download_embeddings_model,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");
