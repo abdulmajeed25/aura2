@@ -256,4 +256,84 @@ remain deferred to Phase 11c.
 
 ---
 
+### Phase 11c — Curiosity + perpetual loop + Tauri event emission
+
+Closes out the cognitive-core stand-in (#11). The loop now runs as a
+background tokio task, observations flow in over an MPSC channel, and
+snapshot events fan out to the frontend on the `cortex://snapshot`
+Tauri event channel.
+
+- **What landed:**
+  - `cognition/curiosity.rs` — Schmidhuber-style learning-progress score.
+    Fixed-capacity sliding window over recent free-energy values; score
+    = `mean(F_oldest_half) − mean(F_newest_half)`. Returns 0 until the
+    window is full so a half-populated window doesn't surface noisy
+    estimates.
+  - `cognition/perpetual_loop.rs` — `LoopHandle` + `spawn(cortex, cfg)`.
+    Tokio task heartbeats at `dt_ms` via `tokio::time::interval` with
+    `MissedTickBehavior::Delay`. Each beat drains the observation MPSC
+    (latest one wins, zeros if none), ticks the cortex, updates the
+    curiosity score, and `try_send`s a snapshot when
+    `tick % snapshot_every == 0`. Backpressure policy: drop snapshots
+    on a full channel rather than slowing the cortex.
+    Clean shutdown via `oneshot` (`LoopHandle::shutdown().await`) or on
+    drop (`tokio JoinHandle::abort`).
+  - `commands/cortex.rs` — four Tauri commands:
+    - `start_cortex(cognitive_dim?, reservoir_dim?, dt_ms?, seed?)` —
+      shuts down any existing loop, builds a Xavier-init cortex, spawns
+      the perpetual loop, attaches an `app.emit("cortex://snapshot", …)`
+      forwarder.
+    - `stop_cortex` — idempotent shutdown.
+    - `send_observation(observation: Vec<f32>)` — forwards into the
+      loop's obs MPSC; errors with `cortex not running` if no loop is
+      active.
+    - `cortex_status` — `{ running: bool, … }`.
+  - `AppState.cortex: Arc<Mutex<Option<LoopHandle>>>`, registered in
+    `tauri::generate_handler![…]`. Tauri command count: 40 → 44.
+
+- **Math-driven TDD (+9 tests):**
+  - Curiosity: empty/half-full → 0; hand-computed monotone decrease
+    on [10..1] → +5.0; monotone increase on [1..10] → −5.0; constant
+    → 0; sliding behaviour drops oldest after capacity exceeded
+    (window [2,3,4,5] from 0..6 → −2.0).
+  - PerpetualLoop: spawns + emits ≥3 snapshots in 200 ms at dt=2 ms;
+    observation MPSC reaches the cortex (asserts F > 0 after pushing
+    `[1, -1, 0.5, -0.5]`); clean shutdown completes within 1 s.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps -- -D warnings
+  cargo test --lib cognition::            # 48 passed
+  cargo test                              # 161 passed, 4 ignored
+  cd ..
+  pnpm typecheck                          # clean
+  ```
+
+- **Expected output:** clippy clean. `cargo test --lib cognition::`
+  shows 48 passed (was 39 after 11b; +6 curiosity + +3 perpetual_loop).
+  Total suite shows 161 passed / 4 ignored (was 152+4 after 11b).
+  Tauri command registry: 44 declared, 44 registered (verified).
+
+- **Stand-ins delta:**
+  - **#11 closed** (🟡 → 🟢) — kernels + perpetual loop + Tauri events
+    all in. The LLM-narrated reflection synthesis remains a Phase 15
+    (agent orchestration) follow-on; the registry entry calls that out
+    explicitly.
+
+- `STOP — request "continue"` before the next phase. Cognitive Core is
+  shippable end-to-end (backend + perpetual loop + Tauri event channel).
+  Open paths forward:
+  - **Phase 15 starter** — wire `cortex://snapshot` into a reflection
+    writer that drops `.aura/brain/reflections/*.md` when F spikes or
+    curiosity dips. Doesn't need an external LLM (template-only
+    reflections are fine as a stand-in).
+  - **Phase 12** — Hamiltonian fusion + FHRR holographic memory
+    (experimental; telemetry-instrumented).
+  - **Phase 13** — Neuro-symbolic: VSA inference + ILP + Z3 sidecar.
+  - **Phase 5** (when a model file can be vendored) — real ONNX MiniLM
+    + Anthropic Contextual Retrieval.
+
+---
+
 (Future phases appended here.)

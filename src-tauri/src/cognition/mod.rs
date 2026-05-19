@@ -23,9 +23,11 @@
 
 pub mod cans;
 pub mod cortex;
+pub mod curiosity;
 pub mod free_energy;
 pub mod hebbian;
 pub mod hopfield;
 pub mod langevin;
 pub mod lsm;
+pub mod perpetual_loop;
 pub mod shared_cortex;
