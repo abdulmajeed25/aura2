@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod cognition;
 pub mod commands;
 pub mod core;

@@ -25,3 +25,11 @@ tsconfig.tsbuildinfo
 models/*.onnx
 models/*.gguf
 models/*.safetensors
+
+# Anthropic / OpenAI / Ollama keys.
+# A user's vault lives outside this repo, but if it ever gets dragged in
+# (drag-and-drop accident, IDE workspace) these globs keep secrets out of git.
+**/.aura/secrets/
+**/*.key
+**/anthropic.key
+**/openai.key

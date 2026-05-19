@@ -60,8 +60,9 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# HTTP client for downloading the embeddings model on first run
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# HTTP client for downloading the embeddings model on first run + the
+# Anthropic Messages API. `json` feature: serde-aware POST bodies.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 
 # Pure-Rust ONNX runtime for the all-MiniLM-L6-v2 embedder (Phase 5).
 # tract-onnx avoids the C++ ONNX Runtime dependency and is portable to
@@ -71,6 +72,10 @@ tract-onnx = { version = "0.21", default-features = false }
 # Hugging Face tokenizers (pure Rust). Used to tokenize input text before
 # running it through the MiniLM ONNX graph.
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+# async fn in traits with object-safety. Used by the AIProvider trait so we
+# can put Anthropic / OpenAI / Ollama behind an `Arc<dyn AIProvider>`.
+async-trait = "0.1"
 
 [features]
 # default Tauri custom-protocol feature for production builds

@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/005_graph_rag.sql"),
     ),
     ("006_media", include_str!("migrations/006_media.sql")),
+    (
+        "007_audit_log",
+        include_str!("migrations/007_audit_log.sql"),
+    ),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -448,6 +452,111 @@ impl VaultDb {
         } else {
             Ok(None)
         }
+    }
+
+    // ---------- audit_log writes (Phase 1 of the API-key batch) -----
+
+    /// Append one row to `audit_log`. Public so `ai::audit::DbAuditLogger`
+    /// can call it; the API key is never one of the parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn audit_insert(
+        &self,
+        timestamp: i64,
+        actor: &str,
+        operation: &str,
+        model: Option<&str>,
+        input_tokens: i64,
+        cache_creation_input_tokens: i64,
+        cache_read_input_tokens: i64,
+        output_tokens: i64,
+        cost_micro_cents: i64,
+        duration_ms: i64,
+        status: &str,
+        metadata_json: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO audit_log (
+                    timestamp, actor, operation, model,
+                    input_tokens, cache_creation_input_tokens,
+                    cache_read_input_tokens, output_tokens,
+                    cost_micro_cents, duration_ms, status, metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                libsql::params![
+                    timestamp,
+                    actor.to_string(),
+                    operation.to_string(),
+                    model.map(str::to_string),
+                    input_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                    output_tokens,
+                    cost_micro_cents,
+                    duration_ms,
+                    status.to_string(),
+                    metadata_json.to_string(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Today's cumulative AI cost in **whole cents** (rounded).
+    pub async fn audit_today_cost_cents(&self) -> Result<i64> {
+        let day_start = {
+            let now = chrono::Utc::now();
+            now.date_naive()
+                .and_hms_opt(0, 0, 0)
+                .map(|n| n.and_utc().timestamp_millis())
+                .unwrap_or(0)
+        };
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT COALESCE(SUM(cost_micro_cents), 0)
+                 FROM audit_log
+                 WHERE timestamp >= ?1 AND actor IN ('anthropic', 'openai')",
+                libsql::params![day_start],
+            )
+            .await?;
+        let micro = rows
+            .next()
+            .await?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+        Ok(micro / 10_000)
+    }
+
+    /// Cache-hit ratio over `window_hours` of anthropic chat calls.
+    /// Returns `None` when no calls have happened in the window.
+    pub async fn audit_cache_hit_ratio(&self, window_hours: i64) -> Result<Option<f32>> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let start = now - window_hours * 3_600_000;
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT
+                    COALESCE(SUM(cache_read_input_tokens), 0),
+                    COALESCE(SUM(cache_creation_input_tokens), 0),
+                    COALESCE(SUM(input_tokens), 0)
+                 FROM audit_log
+                 WHERE actor = 'anthropic'
+                   AND operation = 'chat'
+                   AND timestamp >= ?1",
+                libsql::params![start],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        let cache_read: i64 = row.get(0).unwrap_or(0);
+        let cache_creation: i64 = row.get(1).unwrap_or(0);
+        let uncached: i64 = row.get(2).unwrap_or(0);
+        let total = cache_read + cache_creation + uncached;
+        if total == 0 {
+            return Ok(None);
+        }
+        Ok(Some(cache_read as f32 / total as f32))
     }
 
     pub async fn list_media(&self) -> Result<Vec<MediaRow>> {
