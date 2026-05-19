@@ -8,7 +8,7 @@
 //! - `similarity(a, b)` is cosine = `(a · b) / DIM`, which for bipolar HVs is
 //!   the fraction of agreeing coordinates rescaled to `[-1, 1]`.
 
-use rand::distributions::{Bernoulli, Distribution};
+use rand::Rng;
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
@@ -19,11 +19,13 @@ pub struct Hypervector(pub Vec<i8>);
 
 impl Hypervector {
     /// Allocate a balanced bipolar vector from a deterministic seed.
+    /// Sampling uses a raw uniform `u32` and inspects one bit, which is
+    /// fallible-free (no `Bernoulli::new` `Result` to unwrap) — fits Hard
+    /// Rule #4 (no panics in production paths).
     pub fn random(seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let dist = Bernoulli::new(0.5).unwrap();
         let data: Vec<i8> = (0..HV_DIM)
-            .map(|_| if dist.sample(&mut rng) { 1i8 } else { -1i8 })
+            .map(|_| if rng.gen::<u32>() & 1 == 0 { 1i8 } else { -1i8 })
             .collect();
         Self(data)
     }

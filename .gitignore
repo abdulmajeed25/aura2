@@ -18,4 +18,10 @@ Thumbs.db
 
 # Local test vault data
 tests/fixtures/sample-vault/.aura/
+tests/fixtures/real-vault/.aura/
 tsconfig.tsbuildinfo
+
+# Lazy-downloaded ONNX models (Phase 5/8/9 swaps) — never commit binaries
+models/*.onnx
+models/*.gguf
+models/*.safetensors

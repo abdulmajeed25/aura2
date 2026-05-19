@@ -9,6 +9,9 @@ use aura_lib::core::graph_engine::{compute_graph, LayoutParams};
 use aura_lib::core::vault::VaultState;
 
 #[tokio::test]
+#[ignore = "Slow audit benchmark (≈6 minutes debug, ≈1 minute release). Numbers \
+            recorded in TRUTH_AUDIT.md (Finding 9 / C18). Re-run with \
+            `cargo test --release -- --ignored audit_layout_time_scales`."]
 async fn audit_layout_time_scales() {
     let root = std::env::temp_dir().join(format!("aura-audit-perf-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&root).unwrap();

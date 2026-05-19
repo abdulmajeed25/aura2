@@ -84,5 +84,12 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            // Hard Rule #4: do not panic in production paths. The Tauri
+            // event loop can fail to initialise (missing display, GTK init
+            // failure, denied permissions). Surface the error to stderr and
+            // exit with a non-zero code so the OS / shell can react.
+            eprintln!("aura: tauri event loop terminated: {}", e);
+            std::process::exit(1);
+        });
 }
