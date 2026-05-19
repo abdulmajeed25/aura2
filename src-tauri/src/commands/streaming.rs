@@ -195,5 +195,9 @@ async fn run_query_with_fused(
         context_payload: context.trim_end().to_string(),
         estimated_tokens,
         covered_notes,
+        llm_answer: None,
+        cited_communities: Vec::new(),
+        cited_notes: Vec::new(),
+        answer_model: None,
     })
 }

@@ -37,6 +37,22 @@ pub struct GraphRagAnswer {
     pub estimated_tokens: u32,
     /// How many notes the answer effectively summarises.
     pub covered_notes: u32,
+    /// Phase batch step 3: Claude-Sonnet-generated natural-language
+    /// answer with inline citation markers. `None` when no Anthropic
+    /// key is configured or the LLM call failed (the UI falls back to
+    /// rendering `context_payload`).
+    #[serde(default)]
+    pub llm_answer: Option<String>,
+    /// Community IDs cited inline as `[C<n>]` in `llm_answer`. Empty
+    /// when no LLM answer.
+    #[serde(default)]
+    pub cited_communities: Vec<i64>,
+    /// Note paths cited inline as `[N:<path>]` in `llm_answer`.
+    #[serde(default)]
+    pub cited_notes: Vec<String>,
+    /// Model id that produced `llm_answer`, if any.
+    #[serde(default)]
+    pub answer_model: Option<String>,
 }
 
 /// Run a GraphRAG query against the community index.
@@ -91,6 +107,10 @@ pub async fn run_query(
         context_payload,
         estimated_tokens,
         covered_notes,
+        llm_answer: None,
+        cited_communities: Vec::new(),
+        cited_notes: Vec::new(),
+        answer_model: None,
     })
 }
 
@@ -101,6 +121,10 @@ fn empty_answer(question: &str) -> GraphRagAnswer {
         context_payload: String::new(),
         estimated_tokens: 0,
         covered_notes: 0,
+        llm_answer: None,
+        cited_communities: Vec::new(),
+        cited_notes: Vec::new(),
+        answer_model: None,
     }
 }
 

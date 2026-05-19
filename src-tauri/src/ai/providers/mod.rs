@@ -13,6 +13,7 @@
 //! supports them, otherwise they're free metadata."
 
 pub mod anthropic;
+pub mod mock;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

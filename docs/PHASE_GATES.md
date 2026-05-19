@@ -1291,3 +1291,102 @@ the regular `Cortex::tick` is unchanged.
 ---
 
 (Future phases appended here.)
+
+### Phase batch — Anthropic provider + Community Summaries + GraphRAG answer
+
+Three-step batch sharing one provider. Steps 1–3 land here; steps 4–6
+(agent executor, prompt-caching telemetry UI, prompt self-modifier)
+ship later per the original plan. Demo-ready: pointing a vault at
+this branch + dropping the user's Anthropic key at
+`<vault>/.aura/secrets/anthropic.key` gives real Haiku summaries
++ real Sonnet answers with citations.
+
+- **Step 1 — Anthropic provider trait + key loader:**
+  - `src/ai/secrets.rs` — `ApiKey` newtype with redacted Debug/Display;
+    `load_anthropic_key(vault_root)` reads
+    `<vault>/.aura/secrets/anthropic.key` (chmod-checked on Unix),
+    falls back to `ANTHROPIC_API_KEY` env var.
+  - `src/ai/providers/mod.rs` — `AIProvider` trait, `ChatRequest`
+    builder, `CacheTtl` (5m | 1h), `Usage`, `AiError` (incl.
+    `BudgetExceeded`, `RateLimited`).
+  - `src/ai/providers/anthropic.rs` — `AnthropicProvider` with
+    cache_control breakpoints, 429 + 5xx exponential backoff with
+    ±15% jitter (honors `Retry-After`), per-call cost calc, daily
+    budget guard (default $5 cap).
+  - `src/ai/providers/mock.rs` — `MockProvider` for deterministic
+    tests.
+  - `src/ai/audit.rs` + migration `007_audit_log.sql` — one row per
+    AI call (timestamp, actor, operation, model, token counts,
+    micro-cents cost, duration, status, metadata).
+
+- **Step 2 — Community summaries (#3):**
+  - `core/graph_rag/llm_summarizer.rs` — Haiku-4-5 with 1h-cached
+    system prompt; chunks-then-meta-summarises for communities
+    with > 12 members.
+  - `commands/graph_rag::rebuild_graph_rag` — auto-LLM when key is
+    loadable, extractive fallback on absence-of-key OR LLM error.
+    `RebuildReport` gains `llm_summaries` + `extractive_summaries`.
+
+- **Step 3 — GraphRAG answer (#4):**
+  - `core/graph_rag/llm_answer.rs` — Sonnet-4-6 with 1h-cached
+    system prompt; user prompt lays out top-K communities with
+    `[C<id>]` headers + `[N:<path>]` member refs; parser extracts
+    citation markers.
+  - `GraphRagAnswer` gains `llm_answer: Option<String>`,
+    `cited_communities`, `cited_notes`, `answer_model` (all
+    `#[serde(default)]` for forward compat).
+
+- **Math-driven TDD (+26 tests):**
+  - Step 1 (14): key loader file + env + missing + empty;
+    Debug/Display/pretty-Debug never leak;
+    `redact_network_error` scrubs sk-ant-; mock-server end-to-end
+    with audit row; 429-then-success; budget guard refuses;
+    cache_control in request JSON; Haiku cost matches published
+    prices.
+  - Step 2 (5): one call for ≤12 members; 4 calls for 25 members;
+    cache breakpoint on system; empty community skips provider;
+    metadata carries op + level + partition_cid.
+  - Step 3 (7): provider called once + citations parsed +
+    de-duped; user prompt lists communities with markers;
+    metadata marks op + candidate IDs; mixed markers parsed;
+    malformed brackets don't swallow valid markers; empty text
+    handled; 1h cache on system.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test                # 252 / 0 / 8
+  ```
+
+  On user's machine, with the key in place:
+  ```
+  tauri invoke rebuild_graph_rag
+  tauri invoke graph_rag_query --question "..."
+  ```
+  `RebuildReport.llm_summaries` will equal community count;
+  `GraphRagAnswer.llm_answer` will be a Sonnet paragraph with
+  `[C<n>]` / `[N:<path>]` markers; `audit_log` rows show token +
+  cost telemetry.
+
+- **Expected output:** clippy strict clean. Suite: 252 / 0 / 8
+  (was 226+8 after Phase 12(b); +14 Step 1 + 5 Step 2 + 7 Step 3
+  = +26). All tests offline against `MockProvider` / hand-rolled
+  axum mock — no real Anthropic calls in the sandbox.
+
+- **Stand-ins delta:**
+  - **#3 closed** (🟡 → 🟢) — real LLM summaries with caching.
+  - **#4 closed** (🟡 → 🟢) — Sonnet answer + citations.
+  - Hard Rule #10 honoured: `RebuildReport` / `GraphRagAnswer`
+    expose which path ran so the UI can say "Real LLM" vs
+    "Extractive fallback" truthfully.
+
+- **Forbidden actions during the batch — all honoured:**
+  API key never logged, displayed, serialised, sent off-host.
+  Key file gitignored (`**/.aura/secrets/`, `**/*.key`). No
+  hardcoding, no Tauri localStorage, no non-Anthropic endpoints,
+  no error-message leaks.
+
+- `STOP — request "continue"` before steps 4–6 (agent executor,
+  prompt-caching telemetry UI, prompt self-modifier).
+

@@ -3,8 +3,13 @@ use std::collections::HashMap;
 use serde::Serialize;
 use tauri::State;
 
+use crate::ai::audit::DbAuditLogger;
+use crate::ai::providers::AIProvider;
+use crate::ai::providers::anthropic::AnthropicProvider;
+use crate::ai::secrets::load_anthropic_key;
 use crate::core::embeddings::{embedding_to_bytes, TextEncoder, EMBED_DIM};
 use crate::core::graph_rag::leiden::{leiden, Partition};
+use crate::core::graph_rag::llm_summarizer::{summarize_community, CommunityEntries};
 use crate::core::graph_rag::query_engine::{run_query, GraphRagAnswer};
 use crate::core::graph_rag::summarizer::{extractive_summary, leading_paragraphs};
 use crate::db::sqlite::ReplaceCommunity;
@@ -21,6 +26,11 @@ pub struct RebuildReport {
     pub levels: u32,
     /// Per-level community counts, coarsest-first.
     pub per_level: Vec<u32>,
+    /// How many community summaries came from Claude (Phase batch step 2).
+    pub llm_summaries: u32,
+    /// How many summaries fell back to the extractive path (no key, or
+    /// the LLM call failed and we retried locally).
+    pub extractive_summaries: u32,
 }
 
 /// Detect communities (real Leiden, all hierarchy levels), summarise each,
@@ -51,6 +61,21 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         0xA1A0_2026_u64, // seed — same as the original LPA call for continuity
     );
 
+    // Phase batch step 2: if an Anthropic key is configured, build a
+    // provider once and use it for every community's summary. Falls
+    // back to the extractive summariser when no key is present so the
+    // command still works offline.
+    let llm_provider: Option<std::sync::Arc<dyn AIProvider>> =
+        match load_anthropic_key(&vault.root) {
+            Ok(key) => {
+                let audit = std::sync::Arc::new(DbAuditLogger::new(vault.db.clone()));
+                Some(std::sync::Arc::new(AnthropicProvider::new(key, audit)))
+            }
+            Err(_) => None,
+        };
+    let mut llm_summaries: u32 = 0;
+    let mut extractive_summaries: u32 = 0;
+
     // Build the per-level community payloads with parent linkage.
     let mut payloads: Vec<OwnedReplaceCommunity> = Vec::new();
     let mut per_level_counts: Vec<u32> = Vec::with_capacity(leiden_result.levels.len());
@@ -67,6 +92,9 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
             &id_to_path,
             vault.encoder.as_ref(),
             vault,
+            llm_provider.as_deref(),
+            &mut llm_summaries,
+            &mut extractive_summaries,
         )
         .await?;
         per_level_counts.push(level_payloads.len() as u32);
@@ -113,12 +141,15 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         avg_members,
         levels: leiden_result.levels.len() as u32,
         per_level: per_level_counts,
+        llm_summaries,
+        extractive_summaries,
     })
 }
 
 /// Build the per-community payloads for one hierarchy level. If
 /// `parent_partition` is `Some`, each community's `parent_partition_cid`
 /// is resolved by looking up any of its members in the coarser partition.
+#[allow(clippy::too_many_arguments)]
 async fn build_level_payloads(
     level: i64,
     partition: &Partition,
@@ -126,6 +157,9 @@ async fn build_level_payloads(
     id_to_path: &HashMap<String, (String, String)>,
     encoder: &dyn TextEncoder,
     vault: &crate::core::vault::VaultState,
+    llm: Option<&dyn AIProvider>,
+    llm_summaries: &mut u32,
+    extractive_summaries: &mut u32,
 ) -> Result<Vec<OwnedReplaceCommunity>, AuraError> {
     let mut by_community: HashMap<u32, Vec<String>> = HashMap::new();
     for (node_id, cid) in partition {
@@ -146,7 +180,29 @@ async fn build_level_payloads(
             let lead = leading_paragraphs(&content, 240);
             entries.push((title.clone(), lead));
         }
-        let summary = extractive_summary(&entries);
+        let summary = if let Some(provider) = llm {
+            let c = CommunityEntries {
+                level,
+                partition_cid: cid,
+                member_entries: &entries,
+            };
+            match summarize_community(provider, &c).await {
+                Ok(s) if !s.trim().is_empty() => {
+                    *llm_summaries += 1;
+                    s
+                }
+                Ok(_) | Err(_) => {
+                    // LLM returned nothing OR errored (rate-limited,
+                    // network, budget) — fall back so a single broken
+                    // call doesn't poison the whole rebuild.
+                    *extractive_summaries += 1;
+                    extractive_summary(&entries)
+                }
+            }
+        } else {
+            *extractive_summaries += 1;
+            extractive_summary(&entries)
+        };
         let emb = encoder.encode(&summary);
         let bytes = embedding_to_bytes(&emb);
 
@@ -170,6 +226,13 @@ async fn build_level_payloads(
 
 /// Run a GraphRAG query. If the community index is empty, returns an empty
 /// answer so the UI can show a "run rebuild first" hint.
+///
+/// Phase batch step 3: when an Anthropic key is configured, the top-K
+/// communities feed into a Claude Sonnet call that produces a
+/// natural-language answer with inline `[C<n>]` / `[N:<path>]`
+/// citation markers. The extracted citation lists land in
+/// `cited_communities` + `cited_notes`. Without a key, the answer
+/// fields stay `None` and the UI renders `context_payload` as before.
 #[tauri::command]
 pub async fn graph_rag_query(
     state: State<'_, AppState>,
@@ -179,9 +242,39 @@ pub async fn graph_rag_query(
     let guard = state.vault.lock().await;
     let vault = guard.as_ref().ok_or(AuraError::NoVault)?;
     let limit = limit.unwrap_or(3) as usize;
-    let answer = run_query(&vault.db, vault.encoder.as_ref(), &question, limit)
+    let mut answer = run_query(&vault.db, vault.encoder.as_ref(), &question, limit)
         .await
         .map_err(AuraError::from)?;
+
+    if answer.communities.is_empty() {
+        return Ok(answer);
+    }
+
+    if let Ok(key) = load_anthropic_key(&vault.root) {
+        let audit = std::sync::Arc::new(DbAuditLogger::new(vault.db.clone()));
+        let provider = AnthropicProvider::new(key, audit);
+        match crate::core::graph_rag::llm_answer::compose_answer(
+            &provider,
+            &question,
+            &answer.communities,
+        )
+        .await
+        {
+            Ok(out) => {
+                answer.llm_answer = Some(out.answer);
+                answer.cited_communities = out.cited_communities;
+                answer.cited_notes = out.cited_notes;
+                answer.answer_model = Some(out.model);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "aura::graphrag",
+                    "LLM answer failed ({e}); returning context-payload only"
+                );
+            }
+        }
+    }
+
     Ok(answer)
 }
 
