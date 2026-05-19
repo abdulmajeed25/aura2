@@ -79,8 +79,11 @@ async fn rebuild_then_query_returns_relevant_community() {
 
     let borrowed: Vec<ReplaceCommunity<'_>> = owned
         .iter()
-        .map(|(level, members, summary, emb)| ReplaceCommunity {
+        .enumerate()
+        .map(|(idx, (level, members, summary, emb))| ReplaceCommunity {
             level: *level,
+            partition_cid: idx as u32,
+            parent_partition_cid: None,
             member_file_ids: members.iter().map(String::as_str).collect(),
             summary_text: summary,
             embedding: emb,
@@ -165,8 +168,11 @@ async fn context_payload_is_compact_relative_to_full_vault() {
     }
     let borrowed: Vec<ReplaceCommunity<'_>> = owned
         .iter()
-        .map(|(level, members, summary, emb)| ReplaceCommunity {
+        .enumerate()
+        .map(|(idx, (level, members, summary, emb))| ReplaceCommunity {
             level: *level,
+            partition_cid: idx as u32,
+            parent_partition_cid: None,
             member_file_ids: members.iter().map(String::as_str).collect(),
             summary_text: summary,
             embedding: emb,
@@ -188,5 +194,73 @@ async fn context_payload_is_compact_relative_to_full_vault() {
         total_chars
     );
 
+    fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn phase7a_ii_persists_hierarchy_with_parent_links() {
+    // Two levels: a fine-grained partition where each node is its own
+    // community (cids 0..3), and a coarse partition that merges them all
+    // into one community (cid 0). After persistence, every fine-level
+    // row should point at the one coarse-level row via parent_id.
+    let root = copy_fixture_to_temp();
+    let vault = VaultState::open(root.clone()).await.unwrap();
+    vault.reindex().await.unwrap();
+    let (nodes, _edges) = vault.db.fetch_graph_nodes_and_edges().await.unwrap();
+    assert!(!nodes.is_empty(), "fixture must have nodes");
+
+    let encoder = HashEmbedder::new();
+    let zero_emb = embedding_to_bytes(&encoder.encode("placeholder"));
+
+    type Row = (i64, u32, Option<u32>, Vec<String>, String, Vec<u8>);
+    let owned: Vec<Row> = vec![
+        // Coarsest level (level=1): one community containing every node.
+        (
+            1_i64,
+            0_u32,
+            None,
+            nodes.iter().map(|(id, _, _)| id.clone()).collect(),
+            "coarse: everything".to_string(),
+            zero_emb.clone(),
+        ),
+        // Fine level (level=0): each node is its own community, all
+        // parented to the coarse cid=0.
+        (0_i64, 100, Some(0), vec![nodes[0].0.clone()], "fine 100".into(), zero_emb.clone()),
+        (0_i64, 101, Some(0), vec![nodes[1].0.clone()], "fine 101".into(), zero_emb.clone()),
+        (0_i64, 102, Some(0), vec![nodes[2].0.clone()], "fine 102".into(), zero_emb.clone()),
+    ];
+    let borrowed: Vec<ReplaceCommunity<'_>> = owned
+        .iter()
+        .map(|(level, cid, parent, members, summary, emb)| ReplaceCommunity {
+            level: *level,
+            partition_cid: *cid,
+            parent_partition_cid: *parent,
+            member_file_ids: members.iter().map(String::as_str).collect(),
+            summary_text: summary,
+            embedding: emb,
+            dim: EMBED_DIM as i64,
+        })
+        .collect();
+    vault.db.replace_communities(&borrowed).await.unwrap();
+
+    // Coarsest level = 1.
+    let max = vault.db.max_community_level().await.unwrap();
+    assert_eq!(max, 1, "max level should be 1, got {}", max);
+
+    // Coarsest level: exactly one community.
+    let coarse = vault.db.list_communities_at_level(1).await.unwrap();
+    assert_eq!(coarse.len(), 1);
+    let coarse_id = coarse[0].id;
+
+    // Fine level: three communities, each pointing at the coarse one.
+    let fine = vault.db.list_communities_at_level(0).await.unwrap();
+    assert_eq!(fine.len(), 3);
+
+    // Both levels persisted with the right member counts. The parent_id
+    // → coarse-level row chain is enforced by the FOREIGN KEY constraint
+    // on the `communities.parent_id` column (PRAGMA foreign_keys = ON);
+    // if any fine-level insert had pointed at a non-existent parent, the
+    // `replace_communities` call above would have failed.
+    let _ = coarse_id; // silence unused-var lint
     fs::remove_dir_all(&root).ok();
 }

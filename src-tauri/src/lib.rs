@@ -65,6 +65,8 @@ pub fn run() {
             commands::related::find_related,
             commands::graph_rag::rebuild_graph_rag,
             commands::graph_rag::graph_rag_query,
+            commands::graph_rag::list_communities_at_level,
+            commands::graph_rag::max_community_level,
             commands::streaming::ssm_status,
             commands::streaming::ssm_reset,
             commands::streaming::ssm_step_text,

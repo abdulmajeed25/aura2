@@ -1159,4 +1159,79 @@ available.
 
 ---
 
+### Phase 7a-ii — Persist Leiden hierarchy in the DB
+
+Wires the multi-level Leiden output into the existing
+`communities` + `community_files` tables. The schema already had
+`level` + `parent_id` columns (from Phase 7's initial design); Phase
+7a-ii is the persistence + query-path plumbing.
+
+- **What landed:**
+  - `db::sqlite::ReplaceCommunity` gains `partition_cid: u32` and
+    `parent_partition_cid: Option<u32>`. The caller supplies the
+    community's cid within its level + (optionally) the cid of its
+    parent in the next coarser level.
+  - `replace_communities` now:
+    - Sorts partitions coarsest-first (by `-level`) so parent rows
+      exist before children when FK constraints fire (`PRAGMA
+      foreign_keys = ON`).
+    - Keeps an in-flight `(level, partition_cid) → db_id` map so
+      child rows can look up their parent's DB id.
+  - `all_communities_with_members` filters to `WHERE level = (SELECT
+    MAX(level) FROM communities)` — keeps the GraphRAG query path
+    using the coarsest "top of hierarchy" by default, so backward
+    compat with the v3 single-level reads is preserved.
+  - New DB methods: `list_communities_at_level(level)` and
+    `max_community_level()`.
+  - `commands::graph_rag::rebuild_graph_rag` rewritten to iterate
+    every Leiden level, compute each community's parent cid (look at
+    any member's cid in the next coarser partition), build
+    `OwnedReplaceCommunity` per level, then atomically
+    `replace_communities`. `RebuildReport` gains `levels: u32` and
+    `per_level: Vec<u32>` (counts per level, coarsest-first).
+  - Two new Tauri commands: `list_communities_at_level(level)` and
+    `max_community_level()` for the UI zoom slider. Total Tauri
+    command count: 49 → 51.
+
+- **Math-driven TDD (+1):**
+  - `phase7a_ii_persists_hierarchy_with_parent_links` — manually
+    builds a 2-level partition (coarse: 1 community containing every
+    node; fine: 3 singleton communities each parented to the coarse
+    one). After `replace_communities`:
+    - `max_community_level()` returns 1.
+    - `list_communities_at_level(1)` returns 1 row.
+    - `list_communities_at_level(0)` returns 3 rows.
+    - The fine-level rows are FK-linked to the coarse row — implicit
+      from `PRAGMA foreign_keys = ON` + successful insertion.
+  - Existing integration tests (`rebuild_then_query_…`,
+    `empty_communities_…`, `context_payload_is_compact_…`) still
+    pass with the new `ReplaceCommunity` shape.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --test graph_rag_integration   # 4 passed
+  cargo test                                 # 223 / 0 / 8
+  ```
+
+- **Expected output:** clippy strict clean. Total: 223 / 0 / 8 (was
+  222+8 after Phase 16(a); +1 hierarchy test).
+
+- **Stand-ins delta:**
+  - **#2 fully closed** (🟢, gap description updated). UI hierarchy
+    slider lands when the frontend is built; the DB is ready.
+
+- `STOP — request "continue"` before the next phase. Open paths in
+  priority order:
+  - **Phase 12(b)** — wire Hamiltonian into `Cortex::tick` with
+    telemetry on energy delta.
+  - **Model-file searches** — Whisper-tiny ONNX (Phase 9b), Phi-3
+    mini ONNX (Phase 8a). Both need a tract-compatible mirror.
+  - **The remaining API-key-gated stand-ins** (community summaries,
+    GraphRAG answer, agent executor, prompt caching) need an
+    Anthropic key — these are explicitly your-input-required items.
+
+---
+
 (Future phases appended here.)

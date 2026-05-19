@@ -518,9 +518,14 @@ impl VaultDb {
 
     // ─── GraphRAG (Phase 7) ───────────────────────────────────────────
 
-    /// Replace the entire community partition for the vault. Atomic in the
-    /// sense that the old rows are wiped before the new ones land — readers
-    /// during a rebuild may see an empty table for a moment.
+    /// Replace the entire community hierarchy for the vault. Inserts
+    /// partitions coarsest-first so the `parent_id` foreign key for each
+    /// finer-level community resolves to an already-inserted row.
+    ///
+    /// Atomic in the sense that the old rows are wiped before the new
+    /// ones land — readers during a rebuild may see an empty table for
+    /// a moment. Hierarchy links use `parent_partition_cid` from the
+    /// payload to find the parent's DB id.
     pub async fn replace_communities(
         &self,
         partitions: &[ReplaceCommunity<'_>],
@@ -528,7 +533,26 @@ impl VaultDb {
         self.conn.execute("DELETE FROM community_files", ()).await?;
         self.conn.execute("DELETE FROM communities", ()).await?;
         let now = chrono::Utc::now().timestamp_millis();
-        for p in partitions {
+
+        // Insert coarsest level first so parent rows always exist before
+        // their children. Sort ascending by `-level` (== descending by
+        // level), tie-break by partition_cid for determinism.
+        let mut ordered: Vec<&ReplaceCommunity<'_>> = partitions.iter().collect();
+        ordered.sort_by(|a, b| {
+            b.level
+                .cmp(&a.level)
+                .then_with(|| a.partition_cid.cmp(&b.partition_cid))
+        });
+
+        // (level, partition_cid) → DB id, for parent_id lookup.
+        let mut id_map: std::collections::HashMap<(i64, u32), i64> =
+            std::collections::HashMap::with_capacity(partitions.len());
+
+        for p in ordered {
+            let parent_id: Option<i64> = p
+                .parent_partition_cid
+                .and_then(|pc| id_map.get(&(p.level + 1, pc)).copied());
+
             let mut rows = self
                 .conn
                 .query(
@@ -538,7 +562,7 @@ impl VaultDb {
                      RETURNING id",
                     libsql::params![
                         p.level,
-                        Option::<i64>::None,
+                        parent_id,
                         p.member_file_ids.len() as i64,
                         p.summary_text.to_string(),
                         p.embedding.to_vec(),
@@ -551,6 +575,7 @@ impl VaultDb {
                 Some(row) => row.get(0)?,
                 None => continue,
             };
+            id_map.insert((p.level, p.partition_cid), community_id);
             for fid in &p.member_file_ids {
                 self.conn
                     .execute(
@@ -563,6 +588,10 @@ impl VaultDb {
         Ok(())
     }
 
+    /// Read every community at the **coarsest** level (= `MAX(level)` in
+    /// the table). After Phase 7a-ii multi-level persistence, the table
+    /// contains rows at every Leiden hierarchy level; the GraphRAG query
+    /// path wants only the top of the tree by default.
     pub async fn all_communities_with_members(
         &self,
     ) -> Result<Vec<crate::core::graph_rag::query_engine::CommunityRow>> {
@@ -570,7 +599,9 @@ impl VaultDb {
             .conn
             .query(
                 "SELECT id, level, member_count, summary_text, embedding
-                 FROM communities ORDER BY id",
+                 FROM communities
+                 WHERE level = (SELECT MAX(level) FROM communities)
+                 ORDER BY id",
                 (),
             )
             .await?;
@@ -611,6 +642,76 @@ impl VaultDb {
             });
         }
         Ok(out)
+    }
+
+    /// Read every community at a specific `level`. Used by the UI's
+    /// "zoom" feature in `Phase 7a-ii` — picks one hierarchy level and
+    /// reports the partition + summaries at that granularity. Skips
+    /// embedding to keep payloads small.
+    pub async fn list_communities_at_level(
+        &self,
+        level: i64,
+    ) -> Result<Vec<crate::core::graph_rag::query_engine::CommunityRow>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, level, member_count, summary_text, embedding
+                 FROM communities
+                 WHERE level = ?1
+                 ORDER BY id",
+                libsql::params![level],
+            )
+            .await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id: i64 = row.get(0)?;
+            let level: i64 = row.get(1)?;
+            let member_count: i64 = row.get(2)?;
+            let summary_text: String = row.get(3)?;
+            let embedding: Vec<u8> = row.get(4)?;
+
+            let mut mrows = self
+                .conn
+                .query(
+                    "SELECT f.path, f.title FROM community_files c
+                     JOIN files f ON f.id = c.file_id
+                     WHERE c.community_id = ?1
+                     ORDER BY f.path",
+                    libsql::params![id],
+                )
+                .await?;
+            let mut member_paths = Vec::new();
+            let mut member_titles = Vec::new();
+            while let Some(m) = mrows.next().await? {
+                member_paths.push(m.get::<String>(0)?);
+                member_titles.push(m.get::<String>(1)?);
+            }
+
+            out.push(crate::core::graph_rag::query_engine::CommunityRow {
+                id,
+                level,
+                member_count,
+                member_paths,
+                member_titles,
+                summary_text,
+                embedding,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Highest level present in the communities table — `0` if empty.
+    pub async fn max_community_level(&self) -> Result<i64> {
+        let mut rows = self
+            .conn
+            .query("SELECT COALESCE(MAX(level), 0) FROM communities", ())
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0))
     }
 
     /// FTS5 full-text search returning `(meta, bm25_score)`. Lower bm25 is better.
@@ -963,8 +1064,17 @@ impl VaultDb {
 }
 
 /// Payload for [`VaultDb::replace_communities`].
+///
+/// `partition_cid` is the community's id *within* its `level` (as
+/// returned by the Leiden partition map). `parent_partition_cid`, if
+/// present, is the cid in `level + 1` (one step coarser) that this
+/// community is a sub-piece of — used to populate the `parent_id`
+/// foreign key. The coarsest level always has `parent_partition_cid =
+/// None`.
 pub struct ReplaceCommunity<'a> {
     pub level: i64,
+    pub partition_cid: u32,
+    pub parent_partition_cid: Option<u32>,
     pub member_file_ids: Vec<&'a str>,
     pub summary_text: &'a str,
     pub embedding: &'a [u8],

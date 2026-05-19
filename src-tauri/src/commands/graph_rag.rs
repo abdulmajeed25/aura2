@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::Serialize;
 use tauri::State;
 
-use crate::core::embeddings::{embedding_to_bytes, EMBED_DIM};
-use crate::core::graph_rag::leiden::leiden;
+use crate::core::embeddings::{embedding_to_bytes, TextEncoder, EMBED_DIM};
+use crate::core::graph_rag::leiden::{leiden, Partition};
 use crate::core::graph_rag::query_engine::{run_query, GraphRagAnswer};
 use crate::core::graph_rag::summarizer::{extractive_summary, leading_paragraphs};
 use crate::db::sqlite::ReplaceCommunity;
@@ -13,19 +13,24 @@ use crate::AppState;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RebuildReport {
+    /// Total rows written across all hierarchy levels.
     pub communities: u32,
     pub members_total: u32,
     pub avg_members: f32,
+    /// Number of Leiden hierarchy levels persisted.
+    pub levels: u32,
+    /// Per-level community counts, coarsest-first.
+    pub per_level: Vec<u32>,
 }
 
-/// Detect communities, summarise each, and persist them. Idempotent —
-/// running it again wipes the old partition and writes a fresh one.
+/// Detect communities (real Leiden, all hierarchy levels), summarise each,
+/// and persist them with parent linkage. Idempotent — running it again
+/// wipes the old partition and writes a fresh one.
 #[tauri::command]
 pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildReport> {
     let guard = state.vault.lock().await;
     let vault = guard.as_ref().ok_or(AuraError::NoVault)?;
 
-    // Pull nodes + resolved edges.
     let (nodes_raw, edges_raw) = vault
         .db
         .fetch_graph_nodes_and_edges()
@@ -37,62 +42,48 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         .map(|(id, p, t)| (id.clone(), (p.clone(), t.clone())))
         .collect();
 
-    // Phase 7a: real Leiden replaces LPA. We use the coarsest level (the
-    // top of the hierarchy) for the single-level partition the DB schema
-    // currently stores; later phases can persist intermediate levels too.
     let leiden_result = leiden(
         &node_ids,
         &edges_raw,
         1.0,             // resolution γ
-        4,               // max_levels (matches the spec's "4-level hierarchy")
+        4,               // max_levels (the spec's "4-level hierarchy")
         30,              // max_iterations per level
-        0xA1A0_2026_u64, // seed — same as the old LPA call for continuity
+        0xA1A0_2026_u64, // seed — same as the original LPA call for continuity
     );
-    let partition = leiden_result.final_partition().clone();
 
-    // Group node ids by community.
-    let mut by_community: HashMap<u32, Vec<String>> = HashMap::new();
-    for (node_id, cid) in &partition {
-        by_community.entry(*cid).or_default().push(node_id.clone());
+    // Build the per-level community payloads with parent linkage.
+    let mut payloads: Vec<OwnedReplaceCommunity> = Vec::new();
+    let mut per_level_counts: Vec<u32> = Vec::with_capacity(leiden_result.levels.len());
+    for (level_idx, partition) in leiden_result.levels.iter().enumerate() {
+        let parent_partition = if level_idx + 1 < leiden_result.levels.len() {
+            Some(&leiden_result.levels[level_idx + 1])
+        } else {
+            None
+        };
+        let level_payloads = build_level_payloads(
+            level_idx as i64,
+            partition,
+            parent_partition,
+            &id_to_path,
+            vault.encoder.as_ref(),
+            vault,
+        )
+        .await?;
+        per_level_counts.push(level_payloads.len() as u32);
+        payloads.extend(level_payloads);
     }
-
-    // Embed community summaries with the **same** encoder the query path
-    // uses, so cosine scoring is meaningful. (Fixed in Phase 7a — the
-    // earlier code hard-coded `HashEmbedder::new()` here.)
-    let encoder = vault.encoder.as_ref();
-    let mut payloads: Vec<OwnedReplaceCommunity> = Vec::with_capacity(by_community.len());
-    for members in by_community.values() {
-        let mut entries: Vec<(String, String)> = Vec::with_capacity(members.len());
-        for file_id in members {
-            let (path, title) = match id_to_path.get(file_id) {
-                Some(v) => v,
-                None => continue,
-            };
-            // Read the file body to extract a leading paragraph.
-            let abs = vault
-                .resolve(path)
-                .map_err(|e| AuraError::from(anyhow::anyhow!(e.to_string())))?;
-            let content = std::fs::read_to_string(&abs).unwrap_or_default();
-            let lead = leading_paragraphs(&content, 240);
-            entries.push((title.clone(), lead));
-        }
-        let summary = extractive_summary(&entries);
-        let emb = encoder.encode(&summary);
-        let bytes = embedding_to_bytes(&emb);
-        payloads.push(OwnedReplaceCommunity {
-            level: 0,
-            member_file_ids: members.clone(),
-            summary_text: summary,
-            embedding: bytes,
-            dim: EMBED_DIM as i64,
-        });
-    }
+    // `per_level_counts` is currently fine-to-coarse; reverse for the
+    // report so the coarsest level (the "top" of the hierarchy) comes
+    // first — matches how a UI would render the breadcrumb.
+    per_level_counts.reverse();
 
     // Project to the borrowed shape the DB expects.
     let borrowed: Vec<ReplaceCommunity<'_>> = payloads
         .iter()
         .map(|p| ReplaceCommunity {
             level: p.level,
+            partition_cid: p.partition_cid,
+            parent_partition_cid: p.parent_partition_cid,
             member_file_ids: p.member_file_ids.iter().map(String::as_str).collect(),
             summary_text: &p.summary_text,
             embedding: &p.embedding,
@@ -120,7 +111,61 @@ pub async fn rebuild_graph_rag(state: State<'_, AppState>) -> CmdResult<RebuildR
         communities,
         members_total,
         avg_members,
+        levels: leiden_result.levels.len() as u32,
+        per_level: per_level_counts,
     })
+}
+
+/// Build the per-community payloads for one hierarchy level. If
+/// `parent_partition` is `Some`, each community's `parent_partition_cid`
+/// is resolved by looking up any of its members in the coarser partition.
+async fn build_level_payloads(
+    level: i64,
+    partition: &Partition,
+    parent_partition: Option<&Partition>,
+    id_to_path: &HashMap<String, (String, String)>,
+    encoder: &dyn TextEncoder,
+    vault: &crate::core::vault::VaultState,
+) -> Result<Vec<OwnedReplaceCommunity>, AuraError> {
+    let mut by_community: HashMap<u32, Vec<String>> = HashMap::new();
+    for (node_id, cid) in partition {
+        by_community.entry(*cid).or_default().push(node_id.clone());
+    }
+
+    let mut out: Vec<OwnedReplaceCommunity> = Vec::with_capacity(by_community.len());
+    for (cid, members) in by_community {
+        let mut entries: Vec<(String, String)> = Vec::with_capacity(members.len());
+        for file_id in &members {
+            let Some((path, title)) = id_to_path.get(file_id) else {
+                continue;
+            };
+            let abs = vault
+                .resolve(path)
+                .map_err(|e| AuraError::from(anyhow::anyhow!(e.to_string())))?;
+            let content = std::fs::read_to_string(&abs).unwrap_or_default();
+            let lead = leading_paragraphs(&content, 240);
+            entries.push((title.clone(), lead));
+        }
+        let summary = extractive_summary(&entries);
+        let emb = encoder.encode(&summary);
+        let bytes = embedding_to_bytes(&emb);
+
+        // Parent: any member's community id in the coarser partition.
+        let parent_cid: Option<u32> = parent_partition.and_then(|pp| {
+            members.first().and_then(|m| pp.get(m).copied())
+        });
+
+        out.push(OwnedReplaceCommunity {
+            level,
+            partition_cid: cid,
+            parent_partition_cid: parent_cid,
+            member_file_ids: members,
+            summary_text: summary,
+            embedding: bytes,
+            dim: EMBED_DIM as i64,
+        });
+    }
+    Ok(out)
 }
 
 /// Run a GraphRAG query. If the community index is empty, returns an empty
@@ -140,8 +185,60 @@ pub async fn graph_rag_query(
     Ok(answer)
 }
 
+/// Phase 7a-ii: list every community at a specific hierarchy level. The
+/// UI uses this for the "zoom out / zoom in" slider — level 0 is the
+/// finest (most communities), `max_community_level()` is the coarsest.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommunityListItem {
+    pub id: i64,
+    pub level: i64,
+    pub member_count: i64,
+    pub member_paths: Vec<String>,
+    pub member_titles: Vec<String>,
+    pub summary_text: String,
+}
+
+#[tauri::command]
+pub async fn list_communities_at_level(
+    state: State<'_, AppState>,
+    level: i64,
+) -> CmdResult<Vec<CommunityListItem>> {
+    let guard = state.vault.lock().await;
+    let vault = guard.as_ref().ok_or(AuraError::NoVault)?;
+    let rows = vault
+        .db
+        .list_communities_at_level(level)
+        .await
+        .map_err(AuraError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CommunityListItem {
+            id: r.id,
+            level: r.level,
+            member_count: r.member_count,
+            member_paths: r.member_paths,
+            member_titles: r.member_titles,
+            summary_text: r.summary_text,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn max_community_level(state: State<'_, AppState>) -> CmdResult<i64> {
+    let guard = state.vault.lock().await;
+    let vault = guard.as_ref().ok_or(AuraError::NoVault)?;
+    let n = vault
+        .db
+        .max_community_level()
+        .await
+        .map_err(AuraError::from)?;
+    Ok(n)
+}
+
 struct OwnedReplaceCommunity {
     level: i64,
+    partition_cid: u32,
+    parent_partition_cid: Option<u32>,
     member_file_ids: Vec<String>,
     summary_text: String,
     embedding: Vec<u8>,
