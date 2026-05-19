@@ -34,6 +34,8 @@ pub enum CortexError {
     ObservationShape { observation: usize, cognitive: usize },
     #[error("pattern dim {got} doesn't match cognitive_dim {expected}")]
     PatternShape { expected: usize, got: usize },
+    #[error("hamiltonian: {0}")]
+    Hamiltonian(String),
 }
 
 /// One-tick event returned by [`Cortex::tick`].
@@ -70,6 +72,14 @@ pub struct Cortex {
     pub tick_count: u64,
     /// Hebbian learning rate. Set to 0 to disable plasticity.
     pub hebbian_eta: f32,
+    /// Phase 12(b): conjugate momentum for the symplectic Hamiltonian
+    /// step. Same shape as `cognitive_state`. External callers (the
+    /// spec's "Claude-injected momentum") can write into this field
+    /// before invoking [`Self::step_hamiltonian`].
+    pub momentum: Vec<f32>,
+    /// Number of leapfrog steps executed so far — telemetry for the
+    /// spec's 30-day retention experiment.
+    pub hamiltonian_steps: u64,
 }
 
 impl Cortex {
@@ -94,6 +104,8 @@ impl Cortex {
             sampler: langevin::Sampler::new(seed),
             tick_count: 0,
             hebbian_eta: 0.0,
+            momentum: vec![0.0; d],
+            hamiltonian_steps: 0,
         }
     }
 
@@ -130,6 +142,8 @@ impl Cortex {
             sampler: s,
             tick_count: 0,
             hebbian_eta: 0.0,
+            momentum: vec![0.0; d],
+            hamiltonian_steps: 0,
         }
     }
 
@@ -142,6 +156,30 @@ impl Cortex {
         }
         self.patterns.extend_from_slice(pat);
         self.n_patterns += 1;
+        Ok(())
+    }
+
+    /// Phase 12(b): one symplectic Hamiltonian step on `(cognitive_state,
+    /// momentum)` against the supplied potential gradient.
+    ///
+    /// Opt-in: not called from [`Self::tick`] today. Callers wire it
+    /// alongside the regular tick to test whether Claude-injected
+    /// momentum + a Hopfield-shaped potential improve retrieval (the
+    /// spec's "experimental, telemetry-instrumented" framing).
+    /// `hamiltonian_steps` is incremented for each successful call so
+    /// the retention-experiment harness can count fusion events.
+    pub fn step_hamiltonian<F>(&mut self, grad_v: F, dt: f32) -> Result<(), CortexError>
+    where
+        F: Fn(&[f32]) -> Vec<f32>,
+    {
+        crate::cognition::hamiltonian::leapfrog_step(
+            &mut self.state.cognitive_state,
+            &mut self.momentum,
+            grad_v,
+            dt,
+        )
+        .map_err(|e| CortexError::Hamiltonian(e.to_string()))?;
+        self.hamiltonian_steps += 1;
         Ok(())
     }
 
@@ -256,6 +294,11 @@ fn argmax_abs(v: &[f32]) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_borrows_for_generic_args)]
+// `step_hamiltonian` takes its `grad_v` closure by value via `F: Fn`, so
+// `&grad_v` in the loop body keeps the closure usable across iterations
+// without requiring Clone. Clippy's
+// `needless_borrows_for_generic_args` doesn't see through that need.
 mod tests {
     use super::*;
 
@@ -363,5 +406,66 @@ mod tests {
             "γ=0.5 should pull state closer to target than γ=0.0 \
              (got d_pull={d_pull}, d_no_pull={d_no_pull})"
         );
+    }
+
+    /// Phase 12(b): harmonic potential V = ½‖x‖². 100 leapfrog steps
+    /// from `x=[1, 0, 0, 0], p=[0, 0, 0, 0]` should keep the amplitude
+    /// bounded (symplectic; energy doesn't drift).
+    #[test]
+    fn step_hamiltonian_keeps_harmonic_energy_bounded() {
+        let mut c = Cortex::blank(tiny_config(), 0);
+        // Reset cognitive state to a known non-zero position.
+        c.state.cognitive_state = vec![1.0, 0.0, 0.0, 0.0];
+        c.momentum = vec![0.0; 4];
+        let grad_v = |x: &[f32]| x.to_vec(); // ∇(½‖x‖²) = x
+        for _ in 0..100 {
+            c.step_hamiltonian(&grad_v, 0.01).unwrap();
+        }
+        assert_eq!(c.hamiltonian_steps, 100);
+        // Energy H = ½‖p‖² + ½‖x‖² starts at 0.5 and stays near.
+        let h: f32 = c
+            .momentum
+            .iter()
+            .map(|p| 0.5 * p * p)
+            .sum::<f32>()
+            + c.state
+                .cognitive_state
+                .iter()
+                .map(|x| 0.5 * x * x)
+                .sum::<f32>();
+        let drift = (h - 0.5).abs() / 0.5;
+        assert!(
+            drift < 0.01,
+            "harmonic energy drift {drift} > 1%; H={h}"
+        );
+    }
+
+    /// With zero initial momentum and a non-zero force (constant gravity
+    /// `∇V = -1` in one dim), the position should accelerate.
+    /// After 50 steps at dt=0.1 from x=0, p=0:
+    ///   x(t) ≈ ½ · a · t²  with a=1, t=5 → x ≈ 12.5
+    /// Leapfrog with constant force is exact, so the test asserts ±5 %.
+    #[test]
+    fn step_hamiltonian_accelerates_under_constant_force() {
+        let mut c = Cortex::blank(tiny_config(), 0);
+        c.state.cognitive_state = vec![0.0, 0.0, 0.0, 0.0];
+        c.momentum = vec![0.0; 4];
+        let grad_v = |_: &[f32]| vec![-1.0_f32, 0.0, 0.0, 0.0]; // ∇V = -1
+        for _ in 0..50 {
+            c.step_hamiltonian(&grad_v, 0.1).unwrap();
+        }
+        let x = c.state.cognitive_state[0];
+        let expected = 12.5_f32;
+        let rel_err = (x - expected).abs() / expected;
+        assert!(rel_err < 0.05, "x={x}, expected ≈{expected}");
+    }
+
+    /// Default momentum is zero-initialised at the right dim.
+    #[test]
+    fn momentum_default_shape() {
+        let c = Cortex::blank(tiny_config(), 0);
+        assert_eq!(c.momentum.len(), 4);
+        assert!(c.momentum.iter().all(|&v| v == 0.0));
+        assert_eq!(c.hamiltonian_steps, 0);
     }
 }

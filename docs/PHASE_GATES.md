@@ -1234,4 +1234,60 @@ Wires the multi-level Leiden output into the existing
 
 ---
 
+### Phase 12(b) — Wire Hamiltonian into Cortex
+
+Minimal opt-in wiring per the spec's "experimental, telemetry-
+instrumented" framing. The Hamiltonian leapfrog kernel from Phase
+12(a) is now exposed on the `Cortex` struct via an opt-in method;
+the regular `Cortex::tick` is unchanged.
+
+- **What landed:**
+  - `Cortex` gains two fields:
+    - `momentum: Vec<f32>` — same shape as `cognitive_state`,
+      zero-initialised. External callers (the spec's "Claude-
+      injected momentum") can write into this field before invoking
+      `step_hamiltonian`.
+    - `hamiltonian_steps: u64` — increments on each successful
+      `step_hamiltonian` call. Telemetry counter for the 30-day
+      retention experiment.
+  - `Cortex::step_hamiltonian(grad_v, dt)` — opt-in: runs one
+    leapfrog step against any caller-supplied potential gradient.
+    Errors from the kernel propagate as `CortexError::Hamiltonian`.
+  - Default `Cortex::tick` is unchanged — calling it does not
+    invoke the leapfrog. Callers opt in explicitly.
+
+- **Math-driven TDD (+3):**
+  - `step_hamiltonian_keeps_harmonic_energy_bounded` — V = ½‖x‖²,
+    `x = [1, 0, 0, 0]`, `p = [0; 4]`, 100 leapfrog steps at dt=0.01:
+    energy drift < 1 % of H₀ = 0.5.
+  - `step_hamiltonian_accelerates_under_constant_force` — `∇V =
+    [-1, 0, 0, 0]`, x=0, p=0, 50 steps at dt=0.1: x ≈ ½·a·t² =
+    12.5, within 5 %.
+  - `momentum_default_shape` — fresh Cortex has zero-init momentum
+    at cognitive_dim, `hamiltonian_steps = 0`.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --lib cognition::cortex   # all cortex tests pass
+  cargo test                            # 226 / 0 / 8
+  ```
+
+- **Expected output:** clippy strict clean. Total: 226 / 0 / 8 (was
+  223+8 after Phase 7a-ii; +3 from Phase 12(b)).
+
+- **Stand-ins delta:**
+  - **#12 still partial** (🟡, narrowed) — kernel + Cortex wiring in.
+    Pattern-conditioned ∇V (`∇V(x) = -Σ_p softmax(β⟨x,p⟩)·p` over
+    stored patterns) + the 30-day retention experiment harness are
+    the remaining pieces.
+
+- `STOP — request "continue"` before the next phase. With this
+  commit, **every "do-now" path I had control over is in the tree**.
+  The remaining stand-ins all need external input — explicitly
+  surfaced as the last items below.
+
+---
+
 (Future phases appended here.)
