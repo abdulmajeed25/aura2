@@ -1,3 +1,4 @@
+pub mod cognition;
 pub mod commands;
 pub mod core;
 pub mod db;

@@ -124,4 +124,68 @@ This file is the running log of completed gates.
 
 ---
 
+### Phase 11a — Cognitive core kernels (math-driven TDD)
+
+Phase 11 from the v5.0 spec is large — full CAN + LSM + Langevin + Hopfield
++ Hebbian + Free Energy + Curiosity + perpetual-loop orchestrator. This
+gate (Phase 11a) lands the deterministic kernels that don't need external
+models. Hopfield, free-energy, curiosity, and the perpetual loop are
+deferred to 11b/11c.
+
+- **What landed:**
+  - New `src/cognition/` module, declared in `lib.rs`.
+  - `shared_cortex.rs`: `SharedCortex` state container + `CortexConfig`
+    with defaults matching `docs/COGNITIVE_LOOPS.md` (cognitive_dim=512,
+    reservoir_dim=2048, dt=0.01, τ=1.0, α=0.2, β=1.0). State alone is
+    ~18 kB at default sizing — well under the doc's RAM budget.
+  - `langevin.rs`: `Sampler` (Box-Muller on top of `ChaCha8Rng`) +
+    `drift_in_place(state, β, dt)`. Hard Rule #4 followed — no `unwrap`
+    in production paths; sampling loop guards against `ln(0)`.
+  - `cans.rs`: `step_in_place(state, W, I, dt, τ)` — Euler step of the
+    Wilson-Cowan equation `τẋ = -x + tanh(Wx + I)`. Shape mismatches
+    return `CanError`, not panic.
+  - `lsm.rs`: `step_in_place(reservoir, W_res, W_in, u, α)` — leaky
+    reservoir update `r ← (1-α)r + α·tanh(W_res·r + W_in·u)`.
+  - `hebbian.rs`: `reinforce_in_place(W, presyn, postsyn, η)` — dense
+    outer-product update `Δw_ij = η·x_i·y_j`, with a sparse fast path
+    for zero presynaptic rows.
+
+- **Math-driven TDD (22 tests, every one hand-computed):**
+  - Langevin: standard-normal mean+variance on 10k samples; cross-seed
+    correlation at chance; same-seed determinism (bit-exact); drift
+    amplitude matches `Var(Δᵢ) = 2·dt/β`.
+  - CAN: zero-state fixed point; single-step pure decay
+    (x=0.5 → 0.45); single-step input-driven
+    (x=0 → 0.1·tanh(1)); bistable convergence to ±x* ≈ 0.957823
+    (from `x* = tanh(2x*)`); shape errors return Err.
+  - LSM: zero-state zero-input identity; identity-projection passes
+    through tanh; α=0.5 leaky decay; pure geometric decay
+    (r=1, α=0.2, 10 steps → 0.8¹⁰ ≈ 0.1074); bad α returns Err.
+  - Hebbian: hand-computed outer product
+    (`[1, 0.5] ⊗ [0.5, 1] · 0.1`); co-active vs silent unit
+    differentiation; zero-presyn shortcut; shape mismatch returns Err.
+  - SharedCortex: default dims, zero initialisation, RAM budget.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps -- -D warnings   # clean
+  cargo test --lib cognition::            # 22 passed
+  cargo test                              # 135 passed, 4 ignored
+  ```
+
+- **Expected output:** clippy clean. `cargo test --lib cognition::`
+  shows 22 passed. Total suite shows 135 passed / 4 ignored (was 113+4
+  after Phase 1; +22 from the new kernels).
+
+- **Stand-ins delta:**
+  - **#11 partial** (🔴 → 🟡) — kernels in, perpetual loop / Hopfield
+    / free-energy / curiosity pending in 11b/c.
+
+- `STOP — request "continue"` before starting Phase 11b (Hopfield
+  retrieval + free-energy computation + the perpetual-loop orchestrator
+  that integrates the kernels at `dt = 10 ms`).
+
+---
+
 (Future phases appended here.)
