@@ -497,4 +497,84 @@ for English (BGE-M3 / Arabic remains a separate later gate).
 
 ---
 
+### Phase 15a starter — Reflection writer
+
+Closes the cognitive → user feedback loop. The cortex's snapshot stream
+now also drives a template-only reflection writer that materialises
+`.md` files under `<vault>/.aura/brain/reflections/YYYY-MM-DD/`
+whenever free energy spikes or curiosity dips. LLM-narrated synthesis
+of the body text is Phase 15b.
+
+- **What landed:**
+  - `cognition/reflection_writer.rs`:
+    - `Trigger::FSpike` — `free_energy ≥ f_high_threshold`
+      (default `5.0`).
+    - `Trigger::CuriosityDip` — `curiosity ≤ curiosity_dip_threshold`
+      (default `-1.0`). Negative curiosity means F is rising over the
+      recent window — the cortex's predictive model is drifting.
+    - Debounced so a sustained-surprise burst only fires once per
+      `debounce_ticks` (default `100` — one second at the default
+      10 ms tick).
+    - Atomic write: stage to `<file>.md.tmp`, then `rename` —
+      `reflection://written` consumers never see a half-written file.
+    - File layout:
+      `<vault>/.aura/brain/reflections/YYYY-MM-DD/HHMMSS-<trigger>-tickN.md`.
+    - YAML frontmatter (`trigger`, `tick`, `free_energy`, `curiosity`,
+      `dominant_index`, `created_at`, `template_only: true`) so the
+      `template_only` flag is the honest marker that LLM narration
+      hasn't fired yet (Hard Rule #10).
+
+  - `commands/cortex.rs::start_cortex`: snapshot forwarder enriched to
+    feed a `ReflectionWriter` (constructed from `state.vault.root` at
+    spawn time). Every snapshot is emitted on `cortex://snapshot` as
+    before; when the writer fires, the resolved path is also emitted on
+    `reflection://written`. Writer failures `tracing::warn!` and don't
+    crash the forwarder — the loop keeps integrating.
+
+  - `Cargo.toml`: `serde_yaml = "0.9"` for the frontmatter
+    serialisation.
+
+- **Math-driven TDD (+6 tests):**
+  - `calm_snapshot_does_not_fire` — `F = 0.5, curiosity = 0.1` → no
+    fire.
+  - `f_spike_fires` — `F = 6.0` → fires with `trigger: f_spike`,
+    file has the right body markers.
+  - `curiosity_dip_fires` — `curiosity = -2.0` → fires with
+    `trigger: curiosity_dip`.
+  - `debounce_prevents_back_to_back_writes` — 10-tick debounce
+    window: first surprise at tick 100 fires once, ticks 101-109 are
+    silenced, tick 110 fires again.
+  - `frontmatter_round_trips_through_yaml` — parses the rendered
+    YAML back and verifies the key fields.
+  - `path_layout_is_yyyy_mm_dd_then_hhmmss_tick` — directory + file
+    naming convention.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --lib cognition::reflection_writer   # 6 passed
+  cargo test                                       # 172 passed, 4 ignored
+  ```
+
+- **Expected output:** clippy strict clean across lib AND test
+  targets. Suite: 172 passed / 0 failed / 4 ignored (was 166+4 after
+  5a-ii; +6 from the new writer module).
+
+- **Stand-ins delta:**
+  - **#11 extended** (🟢 stays 🟢, gap description widened) —
+    reflection writer is in, LLM narration deferred to 15b. Registry
+    entry now lists 11 cognitive modules instead of 10.
+
+- `STOP — request "continue"` before the next phase. With #11 (now
+  including reflections) + #10 + #8 + #1 (English) closed, four of
+  the audit's biggest gaps are resolved. Open paths:
+  - **Phase 15b** — LLM-narrated reflection bodies (needs Claude API
+    key).
+  - **Phase 5c** — Hybrid RRF via Tantivy (no external deps).
+  - **Phase 12** — Hamiltonian + FHRR holographic memory.
+  - **BGE-M3** — Arabic embedder.
+
+---
+
 (Future phases appended here.)

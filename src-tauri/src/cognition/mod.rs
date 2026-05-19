@@ -30,4 +30,5 @@ pub mod hopfield;
 pub mod langevin;
 pub mod lsm;
 pub mod perpetual_loop;
+pub mod reflection_writer;
 pub mod shared_cortex;

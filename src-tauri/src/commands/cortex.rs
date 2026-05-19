@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::cognition::cortex::Cortex;
 use crate::cognition::perpetual_loop::{spawn, LoopConfig, LoopHandle};
+use crate::cognition::reflection_writer::{ReflectionWriter, ReflectionWriterConfig};
 use crate::cognition::shared_cortex::CortexConfig;
 use crate::utils::error::{AuraError, CmdResult};
 use crate::AppState;
@@ -58,12 +59,35 @@ pub async fn start_cortex(
     let cortex = Cortex::with_seeded_weights(cfg.clone(), seed.unwrap_or(0));
     let mut handle = spawn(cortex, loop_cfg.clone());
 
-    // Forward snapshots from the loop to the Tauri event channel.
+    // Snapshot forwarder: always emit `cortex://snapshot` for the UI; if a
+    // vault is open, also feed each snapshot to a `ReflectionWriter`. When
+    // the writer fires, emit `reflection://written` with the path.
     if let Some(mut rx) = handle.take_snapshots() {
         let app_clone = app.clone();
+        let vault_root = state
+            .vault
+            .lock()
+            .await
+            .as_ref()
+            .map(|v| v.root.clone());
         tokio::spawn(async move {
+            let mut writer = vault_root
+                .map(|root| ReflectionWriter::new(&root, ReflectionWriterConfig::default()));
             while let Some(snap) = rx.recv().await {
-                let _ = app_clone.emit("cortex://snapshot", snap);
+                let _ = app_clone.emit("cortex://snapshot", snap.clone());
+                if let Some(w) = writer.as_mut() {
+                    match w.consider(&snap) {
+                        Ok(Some(path)) => {
+                            let _ = app_clone
+                                .emit("reflection://written", path.display().to_string());
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            target: "aura::reflection",
+                            "write failed: {e}"
+                        ),
+                    }
+                }
             }
         });
     }
