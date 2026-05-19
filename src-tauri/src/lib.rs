@@ -3,6 +3,7 @@ pub mod commands;
 pub mod core;
 pub mod db;
 pub mod protocols;
+pub mod reasoning;
 pub mod utils;
 
 use std::sync::Arc;

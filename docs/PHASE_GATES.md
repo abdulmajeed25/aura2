@@ -990,4 +990,88 @@ end-to-end verified against a stable GitHub-hosted Big Buck Bunny clip.
 
 ---
 
+### Phase 14(a) — VSA inference + Z3 sidecar
+
+Lands the first two pieces of stand-in #14. New `src/reasoning/` module:
+algebraic queries over the bipolar-HDC engine + a Python Z3 sidecar
+spawned via stdin/stdout JSON.
+
+- **What landed:**
+  - `reasoning/vsa_inference.rs` — `VsaKnowledge::from_pairs` builds a
+    bundled `M = ⊕ᵢ bind(Kᵢ, Vᵢ)` over `Hypervector::from_token`.
+    Queries:
+    - `recover_value(role) → Retrieval { label, similarity }` —
+      unbinds with the role's HV, nearest-neighbours against the
+      stored filler vocabulary.
+    - `recover_key(filler) → Retrieval` — symmetric reverse lookup.
+    - `pair_score(role, filler)` — direct similarity check against
+      the bound pair.
+  - `reasoning/z3_bridge.rs` — `Z3Bridge::spawn(sidecar_path)`
+    launches `python3 sidecars/z3_sidecar.py`, waits for the
+    `{"ready": true}` handshake, then exposes
+    `solve(smt: &str) → Z3Reply { result, model, … }`. Internal
+    `Mutex` serialises concurrent callers on the same stdin.
+    Drop kills the child process.
+  - `sidecars/z3_sidecar.py` — minimal SMT-LIB-over-stdin/stdout
+    wrapper around `z3-solver`. One JSON request per line,
+    one JSON reply per line. Emits `"ready"` on import-success so
+    Rust can fail fast if `z3` is missing. Errors are returned as
+    structured `{"error": ...}` replies (not crashes).
+
+- **Math-driven TDD (+9 tests):**
+  - VSA (5):
+    - `three_pair_kb_recovers_each_value` — `(name, abdulmajeed),
+      (country, saudi_arabia), (project, aura)` → each
+      `recover_value` returns the right filler with sim > 0.3.
+    - `recover_key_from_filler` — `recover_key("aura") → "project"`.
+    - `pair_score_distinguishes_stored_from_unstored` — stored
+      pair scores ≥ 0.2 above an unstored cross-pair.
+    - `six_pair_kb_still_distinguishes_each_value` — capacity test
+      at K=6, HV_DIM=10 000; every role retrieves its filler with
+      sim > 0.10.
+    - `unknown_role_returns_none` — no panic on missing keys.
+  - Z3 (4, all spawning the real Python sidecar):
+    - `classic_int_constraint_is_sat` — `x>0 ∧ x<10 ∧ x²>50` →
+      sat, model contains `x = 8` or `x = 9`.
+    - `unsatisfiable_constraint_is_unsat` — `x>5 ∧ x<3` → unsat,
+      no model.
+    - `two_sequential_queries_share_the_sidecar` — id auto-
+      increments, both queries succeed against one bridge.
+    - `sidecar_error_is_returned_as_err` — malformed SMT-LIB
+      (unbalanced paren) → `Err(SidecarError)`, not a panic.
+
+  All Z3 tests degrade to a `skip` print if `python3` or
+  `z3-solver` isn't available, so CI without those still passes the
+  rest.
+
+- **Reproduce:**
+  ```bash
+  # One-time host setup:
+  pip install z3-solver
+
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings   # clean
+  cargo test --lib reasoning::                          # 9 passed
+  cargo test                                            # 211 / 0 / 8
+  ```
+
+- **Expected output:** clippy strict clean. Reasoning suite: 9
+  passed. Total: 211 passed / 0 failed / 8 ignored (was 202+8 after
+  Phase 9(a); +9 from Phase 14(a)).
+
+- **Stand-ins delta:**
+  - **#14 partial** (🔴 → 🟡) — VSA inference + Z3 bridge in. ILP
+    rule-induction engine + DSPy-style prompt self-modifier (the
+    latter needs an LLM) are the remaining pieces.
+
+- `STOP — request "continue"` before the next phase. Open paths:
+  - **Phase 16(a)** — Agent runtime + Anthropic Skills loader
+    (pure Rust, no API key needed for the loader itself).
+  - **Phase 7a-ii** — persist Leiden hierarchy levels in DB.
+  - **Phase 12(b)** — wire Hamiltonian into `Cortex::tick`.
+  - **Model-file searches** — Whisper-tiny ONNX (Phase 9b),
+    Phi-3 ONNX (Phase 8a), tract-compatible multilingual.
+
+---
+
 (Future phases appended here.)
