@@ -19,8 +19,13 @@
 
 pub mod download;
 pub mod embedder;
+pub mod embedder_e5;
 pub mod tokenizer;
 
-pub use download::{download_model, ModelManifest, MANIFEST};
+pub use download::{
+    download_model, find_manifest, ModelArch, ModelManifest, E5_MULTILINGUAL_MANIFEST,
+    MANIFEST, MINILM_MANIFEST, MODELS,
+};
 pub use embedder::OnnxMiniLm;
+pub use embedder_e5::OnnxMultilingualE5;
 pub use tokenizer::MiniLmTokenizer;

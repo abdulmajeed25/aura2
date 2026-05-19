@@ -7,7 +7,10 @@ use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
 use crate::core::embeddings::{embedding_to_bytes, HashEmbedder, TextEncoder};
-use crate::core::embeddings_onnx::{download::is_present, download::vault_model_dir, OnnxMiniLm};
+use crate::core::embeddings_onnx::{
+    download::{is_present, vault_model_dir},
+    OnnxMiniLm, OnnxMultilingualE5, E5_MULTILINGUAL_MANIFEST, MINILM_MANIFEST,
+};
 use crate::core::hdc::encoder::encode_text as encode_text_hv;
 use crate::core::hdc::HV_DIM;
 use crate::core::link_resolver::scan_wiki_links;
@@ -325,40 +328,60 @@ pub struct ReindexReport {
 
 /// Decide which `TextEncoder` to install for a freshly-opened vault.
 ///
-/// - If `<root>/.aura/models/all-MiniLM-L6-v2/{model.onnx, tokenizer.json}`
-///   are both present, attempt to load `OnnxMiniLm`. On success the real
-///   semantic encoder is active for indexing + search.
-/// - Otherwise (or if the load fails for any reason — e.g. corrupted ONNX,
-///   tract version mismatch) fall back to `HashEmbedder`. The fallback path
-///   logs the failure so the user can see in the trace why the real encoder
-///   didn't activate.
+/// Priority order (highest first):
+/// 1. `multilingual-e5-small` (Phase 5d) — 100+ languages incl. Arabic.
+/// 2. `all-MiniLM-L6-v2` (Phase 5a) — English-only, slightly higher quality
+///    on English-only vaults.
+/// 3. `HashEmbedder` — lexical fallback, no model file required.
+///
+/// Each load failure (`tract` version mismatch, corrupted ONNX, missing
+/// tokenizer) is logged via `tracing::warn!` and we fall through to the
+/// next candidate. Hard Rule #10: the returned `&'static str` is the honest
+/// name surfaced in the UI — never claim multilingual when it's English,
+/// never claim semantic when it's the hash.
 fn pick_encoder(root: &Path) -> (Arc<dyn TextEncoder>, &'static str) {
-    let model_dir = vault_model_dir(root);
-    if !is_present(&model_dir) {
-        tracing::info!(
-            target: "aura::embed",
-            "no MiniLM model under {}; using HashEmbedder fallback",
-            model_dir.display()
-        );
-        return (Arc::new(HashEmbedder::new()), "HashEmbedder");
-    }
-    match OnnxMiniLm::load(&model_dir) {
-        Ok(m) => {
-            tracing::info!(
+    let ml_dir = vault_model_dir(root, &E5_MULTILINGUAL_MANIFEST);
+    if is_present(&ml_dir, &E5_MULTILINGUAL_MANIFEST) {
+        match OnnxMultilingualE5::load(&ml_dir) {
+            Ok(m) => {
+                tracing::info!(
+                    target: "aura::embed",
+                    "loaded multilingual-e5-small ONNX from {}",
+                    ml_dir.display()
+                );
+                return (Arc::new(m), "multilingual-e5-small");
+            }
+            Err(e) => tracing::warn!(
                 target: "aura::embed",
-                "loaded all-MiniLM-L6-v2 ONNX from {}",
-                model_dir.display()
-            );
-            (Arc::new(m), "all-MiniLM-L6-v2")
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "aura::embed",
-                "MiniLM load failed ({e}); falling back to HashEmbedder"
-            );
-            (Arc::new(HashEmbedder::new()), "HashEmbedder")
+                "multilingual-e5-small load failed ({e}); trying next encoder"
+            ),
         }
     }
+
+    let en_dir = vault_model_dir(root, &MINILM_MANIFEST);
+    if is_present(&en_dir, &MINILM_MANIFEST) {
+        match OnnxMiniLm::load(&en_dir) {
+            Ok(m) => {
+                tracing::info!(
+                    target: "aura::embed",
+                    "loaded all-MiniLM-L6-v2 ONNX from {}",
+                    en_dir.display()
+                );
+                return (Arc::new(m), "all-MiniLM-L6-v2");
+            }
+            Err(e) => tracing::warn!(
+                target: "aura::embed",
+                "all-MiniLM-L6-v2 load failed ({e}); falling back to HashEmbedder"
+            ),
+        }
+    }
+
+    tracing::info!(
+        target: "aura::embed",
+        "no embedding model installed under {}; using HashEmbedder fallback",
+        root.join(".aura").join("models").display()
+    );
+    (Arc::new(HashEmbedder::new()), "HashEmbedder")
 }
 
 /// Resolve symlinks via `canonicalize`, with two fallbacks:

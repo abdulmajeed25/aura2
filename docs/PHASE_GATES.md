@@ -577,4 +577,91 @@ of the body text is Phase 15b.
 
 ---
 
+### Phase 5d — Multilingual encoder seam (Arabic-capable)
+
+User asked for an Arabic-capable model. Network probe found `terry623/
+spectra-e5-model` on GitHub LFS: quantized multilingual-e5-small (100+
+languages incl. Arabic, 384-d, ~118 MB ONNX + 17 MB tokenizer, MIT).
+Downloaded and SHA-256 verified in the sandbox. The full seam (registry
++ `OnnxMultilingualE5` class + `pick_encoder` priority + Tauri command)
+ships in this gate; **the default download URL has a tract 0.21 load
+issue** documented below.
+
+- **What landed:**
+  - `core/embeddings_onnx/download.rs`: refactored single-`MANIFEST` to
+    a `MODELS: &[&ModelManifest]` registry plus a `find_manifest(name)`
+    helper. New `ModelArch` enum so embedder selection can route to
+    `OnnxMiniLm` vs `OnnxMultilingualE5`. Added `E5_MULTILINGUAL_MANIFEST`
+    pointing at `media.githubusercontent.com/media/terry623/spectra-e5-
+    model/main/onnx/model_quantized.onnx` (LFS-served, 118,308,185 B,
+    SHA `f80102d3…98c193`) and the matching tokenizer.json (17,082,730 B,
+    SHA `0b44a9d7…2c62a0`). `vault_model_dir(root, manifest)` is now
+    per-model so the two bundles can coexist under `<vault>/.aura/
+    models/`.
+  - `core/embeddings_onnx/embedder_e5.rs`: `OnnxMultilingualE5` —
+    same `[1, seq_len=256]` input pinning + attention-weighted mean pool
+    + L2-normalise pipeline as `OnnxMiniLm`, but documented to fill
+    `token_type_ids` with zeros (XLM-R doesn't use segment ids; the
+    spectra export keeps the BERT triple for ORT compatibility).
+  - `core/vault.rs::pick_encoder` rewritten with a priority chain:
+    `multilingual-e5-small → all-MiniLM-L6-v2 → HashEmbedder`. Each
+    failure path logs via `tracing::warn!` so the fallback is visible.
+  - `commands/embeddings.rs`:
+    - `embeddings_model_status` now returns `{ models:
+      [ModelStatus…], active_when_reopened }` — one entry per registered
+      model with installed-or-not + total bytes + supported languages.
+    - `download_embeddings_model(model_name: Option<String>)` picks
+      from the registry; defaults to `"multilingual-e5-small"`.
+    - `DownloadProgress` payload gains a `model` field for UI routing.
+
+- **Known limitation (honest disclosure):** tract 0.21's
+  `into_optimized()` rejects the spectra-e5 quantized ONNX with
+  `Failed analyse for node #564 "/Unsqueeze" AddDims`. Tried
+  `into_typed()`, raw `InferenceModel::into_runnable()`, varying
+  seq_len (128 vs 256), same error each time. The 3 cached-model E5
+  inference tests are marked `#[ignore]` with the tract issue cited.
+  Workaround for Arabic users today: vendor a non-quantized
+  multilingual ONNX (e.g. `intfloat/multilingual-e5-small` raw export)
+  into `<vault>/.aura/models/multilingual-e5-small/{model.onnx,
+  tokenizer.json}` and `pick_encoder` will pick it up automatically.
+
+- **Math-driven TDD (+2 download tests, +3 ignored inference tests):**
+  - `multilingual_manifest_has_arabic` — `languages` includes `"ar"`,
+    arch is `E5Multilingual`.
+  - `find_manifest_resolves_both_keys` — registry lookup by name.
+  - `is_present_returns_false_for_empty_dir` — extended to check both
+    manifests against an empty dir.
+  - `vault_model_dir_is_per_model_name` — verifies the two models get
+    separate `.aura/models/<name>/` subdirs.
+  - `loads_and_encodes_arabic_when_model_cached`,
+    `arabic_paraphrase_pair_is_closer_than_off_topic`,
+    `arabic_english_same_concept_is_close` — `#[ignore]` pending a
+    tract-compatible multilingual ONNX.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test                                       # 174 passed, 7 ignored
+  ```
+
+- **Expected output:** clippy strict clean across lib + test targets.
+  Suite: 174 passed / 0 failed / 7 ignored (was 172+4; +2 new download
+  tests, +3 new ignored E5 inference tests).
+
+- **Stand-ins delta:**
+  - **#1 reopened to 🟡.** English still 🟢 in practice (the
+    `OnnxMiniLm` path is unchanged and verified). Multilingual seam is
+    complete but the default URL fails at tract optimize time; users
+    can provide their own non-quantized multilingual ONNX to unblock.
+    Registry entry rewritten with the honest disclosure.
+
+- `STOP — request "continue"` before the next phase. Path forward for
+  Arabic in production: pick a tract-compatible model, vendor it, or
+  swap inference backend (ort, candle). All are bigger commits than
+  this gate; surfacing them as separate phases keeps the trade-offs
+  reviewable.
+
+---
+
 (Future phases appended here.)
