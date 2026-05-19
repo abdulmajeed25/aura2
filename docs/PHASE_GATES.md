@@ -1074,4 +1074,89 @@ spawned via stdin/stdout JSON.
 
 ---
 
+### Phase 16(a) — Agent runtime: skills + workflow loaders
+
+Lands the first pieces of stand-in #16. New `src/orchestration/`
+directory (the v5.0 spec calls it out as a separate module).
+Loaders + resonance logic ship now; the executor that actually
+runs workflow steps + invokes the LLM lands once an API key is
+available.
+
+- **What landed:**
+  - `orchestration/skills.rs`:
+    - `Skill { name, description, body, path, aux_files }` plus
+      `LoadReport { loaded, skipped }`. Skipped entries include a
+      `reason` so the UI can surface "broken skill" hints without
+      blocking the rest.
+    - `load_skills(dir)` walks `<skills_dir>/<skill_name>/SKILL.md`,
+      parses YAML frontmatter (required: `name`, `description`),
+      enumerates aux files (anything next to `SKILL.md`), sorts
+      results by name.
+  - `orchestration/workflows.rs`:
+    - `Workflow { name, description, trigger_vector?,
+      trigger_threshold (default 0.7), steps: Vec<WorkflowStep>,
+      path }`. `WorkflowStep { kind, args: serde_json::Value }` —
+      unknown kinds accepted at load time so authors can introduce
+      new step types without the loader needing an update.
+    - `load_workflows(dir)` walks `*.json` under
+      `<vault>/.aura/workflows/`, skips non-JSON files silently,
+      reports parse failures with reason.
+    - `resonant(workflows, state) → Vec<&Workflow>` — filters
+      workflows whose `trigger_vector` has cosine ≥
+      `trigger_threshold` to the cortex state. Manual-only
+      workflows (`trigger_vector: None`) are never returned.
+  - `commands/orchestration.rs` — `list_skills`, `list_workflows`
+    Tauri commands targeting `<vault>/.aura/skills/` and
+    `<vault>/.aura/workflows/`.
+
+- **Math-driven TDD (+11 tests):**
+  - Skills (5):
+    - `empty_directory_loads_no_skills`,
+    - `well_formed_skill_loads`,
+    - `aux_files_are_listed`,
+    - `malformed_skill_is_skipped_with_reason` — covers no
+      frontmatter, missing `description`, mixed with a good one;
+      asserts only the good one loads and skip reasons are
+      populated.
+    - `loaded_skills_are_sorted_by_name`,
+    - `non_existent_directory_returns_empty_report`.
+  - Workflows (5):
+    - `empty_dir_loads_no_workflows`,
+    - `well_formed_workflow_loads_with_defaults` — default
+      `trigger_threshold = 0.7`, no `trigger_vector`.
+    - `malformed_workflow_is_skipped` — empty steps, empty name,
+      pure garbage all skipped; good one alongside loads.
+    - `non_json_files_are_ignored` — `README.md`, `.gitkeep`
+      coexist with workflow JSON.
+  - Resonance (1):
+    - `resonant_picks_workflows_whose_trigger_matches` —
+      `[1, 0, 0]` state fires the workflow with that trigger
+      vector; orthogonal one doesn't; manual-only never fires.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test --lib orchestration:: # 11 passed
+  cargo test                       # 222 / 0 / 8
+  ```
+
+- **Expected output:** clippy strict clean. Orchestration suite: 11
+  passed. Total: 222 / 0 / 8 (was 211+8 after Phase 14(a); +11 from
+  Phase 16(a)). Tauri command count: 47 → 49.
+
+- **Stand-ins delta:**
+  - **#16 partial** (🔴 → 🟡) — loaders + resonance ready. Executor +
+    LLM invocation are the API-key-gated follow-on.
+
+- `STOP — request "continue"` before the next phase. Open paths:
+  - **Phase 12(b)** — wire Hamiltonian into `Cortex::tick` with
+    telemetry on energy delta.
+  - **Phase 7a-ii** — persist Leiden hierarchy levels in DB.
+  - **Model-file searches** — try `paraphrase-multilingual-MiniLM-
+    L12-v2` (16-part 7z; would need 7z extraction crate), Phi-3
+    mini ONNX from Microsoft GitHub releases, Whisper-tiny ONNX.
+
+---
+
 (Future phases appended here.)

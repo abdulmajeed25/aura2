@@ -9,6 +9,7 @@ pub mod graph_rag;
 pub mod integrations;
 pub mod link;
 pub mod media;
+pub mod orchestration;
 pub mod related;
 pub mod search;
 pub mod streaming;

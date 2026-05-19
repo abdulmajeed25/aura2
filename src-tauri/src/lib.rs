@@ -2,6 +2,7 @@ pub mod cognition;
 pub mod commands;
 pub mod core;
 pub mod db;
+pub mod orchestration;
 pub mod protocols;
 pub mod reasoning;
 pub mod utils;
@@ -90,6 +91,8 @@ pub fn run() {
             commands::cortex::cortex_status,
             commands::embeddings::embeddings_model_status,
             commands::embeddings::download_embeddings_model,
+            commands::orchestration::list_skills,
+            commands::orchestration::list_workflows,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");
