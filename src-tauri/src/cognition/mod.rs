@@ -22,7 +22,10 @@
 //!   loop + Hopfield + free-energy + curiosity still pending).
 
 pub mod cans;
+pub mod cortex;
+pub mod free_energy;
 pub mod hebbian;
+pub mod hopfield;
 pub mod langevin;
 pub mod lsm;
 pub mod shared_cortex;

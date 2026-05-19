@@ -188,4 +188,72 @@ deferred to 11b/11c.
 
 ---
 
+### Phase 11b — Hopfield + Free Energy + Cortex orchestrator
+
+Lands the three remaining synchronous pieces of the cognitive core. The
+tokio-spawned background loop, CPU throttling, and Tauri event emission
+remain deferred to Phase 11c.
+
+- **What landed:**
+  - `cognition/hopfield.rs` — modern Hopfield retrieval (Ramsauer 2020):
+    `retrieved = Xᵀ · softmax(β · X · ξ)`. High β collapses to nearest
+    pattern; low β averages across the bank. NaN-safe β check via
+    `partial_cmp` (clippy strict).
+  - `cognition/free_energy.rs` — variational F with the accuracy +
+    complexity decomposition (Friston 2010):
+    `F = ½·Σ(y - ŷ)² + ½·ρ·Σ(x - μ)²`. Always non-negative; zero iff
+    perfect prediction and state at prior.
+  - `cognition/cortex.rs` — `Cortex` struct composes all kernels in one
+    `tick(observation)`:
+    1. LSM step on reservoir, input projected via `w_in`.
+    2. CAN step on cognitive state, input = reservoir projected via
+       `w_proj`.
+    3. Langevin drift on cognitive state.
+    4. Hopfield retrieval blend (if `n_patterns > 0` and `γ > 0`).
+    5. Free-energy compute.
+    6. Optional Hebbian reinforcement on `w_can`.
+
+  Two constructors: `Cortex::blank(cfg, seed)` for explicit-weight tests,
+  `Cortex::with_seeded_weights(cfg, seed)` for Xavier-style random init
+  (scaled `1/√fan_in`, conservative enough for stable 100-tick runs).
+
+- **Math-driven TDD (+17 tests, every one hand-computed):**
+  - Hopfield: single-pattern identity; high-β collapse to nearest of two
+    orthogonal patterns; low-β averages to centroid; noisy query
+    retrieves the correct one-hot pattern at β=20; empty bank Err; dim
+    mismatch Err.
+  - Free energy: F=0 when perfect prediction + state at prior; pure
+    prediction-error case (F=0.5 with unit error); pure complexity case
+    (precision=2, 3-D offset=1 → F=3.0); non-negativity; quadratic in
+    error (doubled error → 4× accuracy); shape mismatch Err.
+  - Cortex: blank-cortex zero-observation F≥0; shape mismatch Err;
+    Xavier-init 100-tick stability (no NaN, |state|<10); same-seed
+    bit-exact trajectory replay; Hopfield γ=0.5 pulls state closer to
+    stored pattern than γ=0.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps -- -D warnings
+  cargo test --lib cognition::            # 39 passed
+  cargo test                              # 152 passed, 4 ignored
+  ```
+
+- **Expected output:** clippy clean. `cargo test --lib cognition::`
+  shows 39 passed (was 22 after 11a; +17 from this gate). Total suite
+  shows 152 passed / 4 ignored (was 135+4 after 11a).
+
+- **Stand-ins delta:**
+  - **#11 still partial** (🟡). Gap narrowed: 6 of 7 cognitive
+    components in (langevin, cans, lsm, hebbian, hopfield, free_energy
+    + the cortex orchestrator). Curiosity / learning-progress scoring,
+    the tokio perpetual loop, and Tauri event emission to the UI
+    remain.
+
+- `STOP — request "continue"` before Phase 11c (curiosity score
+  computation + tokio perpetual-loop with 25%-CPU throttling + Tauri
+  event emission for `cortex://snapshot` and `reflection://written`).
+
+---
+
 (Future phases appended here.)
