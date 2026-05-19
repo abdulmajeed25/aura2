@@ -37,10 +37,34 @@ impl VaultState {
         })
     }
 
-    /// Validate a vault-relative path and return its absolute form.
-    /// Absolute paths and any `..` components are rejected.
+    /// Validate a vault-relative path and return its absolute, canonicalised
+    /// form. Hardened (v5.0 Phase 1) against the audit's `audit_path_safety`
+    /// findings:
+    ///
+    /// - Absolute paths (`/foo`, `\foo`, `C:\…`) are rejected.
+    /// - `..` components are rejected (no parent-dir traversal).
+    /// - Bare `"."` / `"./"` are rejected (they resolve to vault root, which
+    ///   no caller actually wants; mid-path `a/./b` is still allowed because
+    ///   it's a no-op).
+    /// - **Null bytes** (`\0`) anywhere in the input are rejected at the API
+    ///   boundary. The std fs layer would error anyway, but defense-in-depth
+    ///   demands we reject before reaching syscalls.
+    /// - **Symlinks** are canonicalised: if the resulting path exists, it is
+    ///   `canonicalize()`d and verified to remain under the canonical vault
+    ///   root. A symlink planted inside the vault that points outside is
+    ///   rejected with [`AuraError::PathOutsideVault`]. For paths that don't
+    ///   exist yet (e.g. `create_file`), the parent directory is canonicalised
+    ///   the same way, then the requested filename is appended.
     pub fn resolve(&self, rel: &str) -> Result<PathBuf, AuraError> {
         if rel.is_empty() {
+            return Err(AuraError::InvalidPath(rel.to_string()));
+        }
+        if rel.contains('\0') {
+            return Err(AuraError::InvalidPath("null byte in path".to_string()));
+        }
+        // Reject bare current-dir references. Mid-path `.` (e.g. `a/./b`) is
+        // legal because the path components iterator treats it as a no-op.
+        if rel == "." || rel == "./" || rel == ".\\" {
             return Err(AuraError::InvalidPath(rel.to_string()));
         }
         let p = Path::new(rel);
@@ -53,7 +77,13 @@ impl VaultState {
                 return Err(AuraError::PathOutsideVault(rel.to_string()));
             }
         }
-        Ok(self.root.join(rel))
+
+        let lexical = self.root.join(rel);
+        let canonical = canonicalise_under_root(&lexical, &self.root)?;
+        if !canonical.starts_with(&self.root) {
+            return Err(AuraError::PathOutsideVault(rel.to_string()));
+        }
+        Ok(canonical)
     }
 
     pub fn relativize(&self, abs: &Path) -> Result<String, AuraError> {
@@ -279,4 +309,47 @@ fn block_for_line(map: &[(u32, String)], line: u32) -> Option<String> {
 pub struct ReindexReport {
     pub indexed: u32,
     pub skipped: u32,
+}
+
+/// Resolve symlinks via `canonicalize`, with two fallbacks:
+///
+/// 1. If `lexical` exists: canonicalise the whole path.
+/// 2. If `lexical` doesn't exist (typical of `create_file`, `write_file` to
+///    a fresh path): canonicalise the parent directory, then re-attach the
+///    leaf name. This catches the case where the parent is itself a symlink
+///    out of the vault.
+/// 3. If even the parent doesn't exist: return the lexical path (it has
+///    already passed the `..` / absolute / null-byte guards in `resolve()`).
+///
+/// `vault_root` should itself already be canonical (set by `VaultState::open`).
+fn canonicalise_under_root(
+    lexical: &Path,
+    vault_root: &Path,
+) -> Result<PathBuf, AuraError> {
+    if lexical.exists() {
+        let canon = lexical
+            .canonicalize()
+            .map_err(AuraError::Io)?;
+        if !canon.starts_with(vault_root) {
+            return Err(AuraError::PathOutsideVault(
+                lexical.display().to_string(),
+            ));
+        }
+        return Ok(canon);
+    }
+    if let Some(parent) = lexical.parent() {
+        if parent.exists() {
+            let parent_canon = parent.canonicalize().map_err(AuraError::Io)?;
+            if !parent_canon.starts_with(vault_root) {
+                return Err(AuraError::PathOutsideVault(
+                    lexical.display().to_string(),
+                ));
+            }
+            let file_name = lexical
+                .file_name()
+                .ok_or_else(|| AuraError::InvalidPath(lexical.display().to_string()))?;
+            return Ok(parent_canon.join(file_name));
+        }
+    }
+    Ok(lexical.to_path_buf())
 }
