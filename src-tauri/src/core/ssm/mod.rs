@@ -21,11 +21,11 @@
 //!   `RotaryEmbedding` — those are `onnxruntime-genai` custom ops.
 //!   [`phi3_runtime::Phi3LoadError::UnsupportedCustomOp`] is the
 //!   structured signal; on user boxes it cleanly drives the EMA
-//!   fallback below. Closing #5 → 🟢 needs one of:
-//!   (a) an `onnxruntime-genai` Python sidecar,
-//!   (b) `candle-transformers` + Phi-3 safetensors (different model
-//!       file from the cpu-int4 ONNX we vendored), or
-//!   (c) Rust-implemented custom ops registered via `ort::operator`.
+//!   fallback below. Closing #5 → 🟢 needs one of: an
+//!   `onnxruntime-genai` Python sidecar, `candle-transformers` +
+//!   Phi-3 safetensors (different model file from the cpu-int4
+//!   ONNX we vendored), or Rust-implemented custom ops registered
+//!   via `ort::operator`.
 
 #[cfg(feature = "ort")]
 pub mod phi3_runtime;

@@ -93,6 +93,7 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 # can put Anthropic / OpenAI / Ollama behind an `Arc<dyn AIProvider>`.
 async-trait = "0.1"
 ort = { version = "2.0.0-rc.9", features = ["download-binaries", "half"], optional = true }
+age = { version = "0.11.3", default-features = false, features = ["armor"] }
 
 [features]
 # default Tauri custom-protocol feature for production builds

@@ -104,7 +104,11 @@ fn locate_onnx(dir: &Path) -> Option<PathBuf> {
             continue;
         }
         let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
-        if best.as_ref().is_none_or(|(b, _)| size > *b) {
+        let bigger = best
+            .as_ref()
+            .map(|(b, _)| size > *b)
+            .unwrap_or(true);
+        if bigger {
             best = Some((size, path));
         }
     }
