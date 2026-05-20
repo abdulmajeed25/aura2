@@ -33,6 +33,6 @@ pub async fn find_orphans(db: &VaultDb) -> Result<Vec<OrphanNote>> {
             title,
         })
         .collect();
-    out.sort_by(|a, b| a.title.to_ascii_lowercase().cmp(&b.title.to_ascii_lowercase()));
+    out.sort_by_key(|o| o.title.to_ascii_lowercase());
     Ok(out)
 }
