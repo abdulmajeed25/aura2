@@ -13,6 +13,10 @@ AI-native knowledge engine.
 - Local-first storage in plain Markdown files
 - Block-level addressability
 - Bi-directional wiki links: see [[Daily/2026-05-18]]
+- Inline transclusion of other notes:
+
+![[Projects/Aura Roadmap#Phase 1 — Foundation]]
+
 - Semantic search (coming in Phase 5)
 
 > Your data, your rules.

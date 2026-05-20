@@ -68,3 +68,152 @@ body,
 .cm-activeLineGutter {
   background: rgba(129, 140, 248, 0.05);
 }
+.cm-wiki-link {
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(129, 140, 248, 0.4);
+  text-underline-offset: 3px;
+}
+.cm-wiki-link:hover {
+  color: var(--color-accent-hover);
+}
+.cm-wiki-link-unresolved {
+  color: #f59e0b;
+  text-decoration-style: dotted;
+  text-decoration-color: rgba(245, 158, 11, 0.6);
+}
+.cm-tooltip-autocomplete {
+  background: var(--color-surface) !important;
+  border: 1px solid var(--color-border) !important;
+  color: var(--color-text) !important;
+  font-family: var(--font-sans) !important;
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--color-surface-hover) !important;
+  color: var(--color-accent) !important;
+}
+
+/* ── Reading view + embed widget ──────────────────────────────────────── */
+.aura-prose {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.aura-prose h1,
+.aura-prose h2,
+.aura-prose h3,
+.aura-prose h4,
+.aura-prose h5,
+.aura-prose h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 1.4em 0 0.5em;
+  color: var(--color-text);
+}
+.aura-prose h1 { font-size: 1.9em; }
+.aura-prose h2 { font-size: 1.5em; }
+.aura-prose h3 { font-size: 1.25em; }
+.aura-prose p,
+.aura-prose ul,
+.aura-prose ol,
+.aura-prose blockquote,
+.aura-prose pre {
+  margin: 0.7em 0;
+}
+.aura-prose ul,
+.aura-prose ol {
+  padding-left: 1.5em;
+}
+.aura-prose li > ul,
+.aura-prose li > ol {
+  margin: 0.2em 0;
+}
+.aura-prose code {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.aura-prose pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow: auto;
+}
+.aura-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.88em;
+}
+.aura-prose blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 1em;
+  color: var(--color-text-dim);
+}
+.aura-prose a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+.aura-prose a:hover {
+  text-decoration: underline;
+}
+.aura-prose a.wiki-link {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.aura-prose hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 1.5em 0;
+}
+.aura-prose table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+}
+.aura-prose th,
+.aura-prose td {
+  border: 1px solid var(--color-border);
+  padding: 6px 10px;
+}
+.embed-block,
+.cm-embed-widget {
+  display: block;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin: 0.6em 0;
+  background: var(--color-surface);
+}
+.embed-header,
+.cm-embed-header {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-faint);
+  margin-bottom: 6px;
+}
+.embed-missing,
+.cm-embed-missing {
+  color: #f59e0b;
+  font-style: italic;
+}
+.cm-embed-loading {
+  color: var(--color-text-faint);
+  font-style: italic;
+  font-size: 12px;
+}
+.cm-embed-body {
+  font-size: 13.5px;
+}
+.cm-embed-body p:first-child { margin-top: 0; }
+.cm-embed-body p:last-child { margin-bottom: 0; }

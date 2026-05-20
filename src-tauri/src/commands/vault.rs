@@ -38,6 +38,8 @@ pub async fn open_vault(
     let detached = Arc::try_unwrap(vault_arc).unwrap_or_else(|arc| VaultState {
         root: arc.root.clone(),
         db: arc.db.clone(),
+        encoder: arc.encoder.clone(),
+        encoder_name: arc.encoder_name,
     });
 
     let mut guard = state.vault.lock().await;

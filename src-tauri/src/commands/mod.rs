@@ -1,2 +1,17 @@
+pub mod agent;
+pub mod ai_telemetry;
+pub mod block;
+pub mod canvas;
+pub mod cortex;
+pub mod embeddings;
 pub mod file;
+pub mod graph;
+pub mod graph_rag;
+pub mod integrations;
+pub mod link;
+pub mod media;
+pub mod orchestration;
+pub mod related;
+pub mod search;
+pub mod streaming;
 pub mod vault;
