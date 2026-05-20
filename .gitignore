@@ -33,3 +33,7 @@ models/*.safetensors
 **/*.key
 **/anthropic.key
 **/openai.key
+
+# LLMLingua-2 sidecar venv (Phase batch step 5) — 3 GB of torch
+services/llmlingua-sidecar/.venv/
+__pycache__/

@@ -3,6 +3,7 @@ pub mod cognition;
 pub mod commands;
 pub mod core;
 pub mod db;
+pub mod memory;
 pub mod orchestration;
 pub mod protocols;
 pub mod reasoning;

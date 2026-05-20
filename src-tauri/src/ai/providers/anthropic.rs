@@ -44,6 +44,10 @@ pub struct AnthropicProvider {
     base_url: String,
     audit: Arc<DbAuditLogger>,
     daily_cap_cents: i64,
+    /// Optional retrieval-prompt compressor. Wired into the
+    /// pre-send [`AnthropicProvider::compress`] step. `None` means
+    /// "pass-through" — the prompt ships unchanged.
+    compressor: Option<Arc<dyn crate::ai::retrieval::Compressor>>,
 }
 
 impl AnthropicProvider {
@@ -58,6 +62,38 @@ impl AnthropicProvider {
             base_url: ANTHROPIC_API_BASE.to_string(),
             audit,
             daily_cap_cents: DEFAULT_DAILY_CAP_CENTS,
+            compressor: None,
+        }
+    }
+
+    /// Install a compressor for the retrieval-prompt pre-send step.
+    /// See [`crate::ai::retrieval::SidecarCompressor`] for the live
+    /// LLMLingua-2 implementation.
+    pub fn with_compressor(
+        mut self,
+        c: Arc<dyn crate::ai::retrieval::Compressor>,
+    ) -> Self {
+        self.compressor = Some(c);
+        self
+    }
+
+    /// Run the configured compressor on `text`, falling back to the
+    /// input unchanged if no compressor is installed or the call
+    /// fails. The fallback is deliberate: the chat path must never
+    /// fail because a sidecar happens to be unreachable.
+    pub async fn compress(&self, text: &str, target_ratio: f32) -> String {
+        let Some(c) = self.compressor.as_ref() else {
+            return text.to_string();
+        };
+        match c.compress(text, target_ratio).await {
+            Ok(r) => r.compressed,
+            Err(e) => {
+                tracing::warn!(
+                    target: "aura::ai",
+                    "compressor failed, sending uncompressed: {e}"
+                );
+                text.to_string()
+            }
         }
     }
 

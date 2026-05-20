@@ -1,0 +1,10 @@
+# LLMLingua-2 compression sidecar.
+#
+# Aura calls this HTTP service from
+# `crate::ai::retrieval::llmlingua::SidecarCompressor` to compress
+# long retrieval prompts before they reach Claude. Keep the surface
+# minimal so a CPU-only VPS can run it.
+
+llmlingua>=0.2.2
+fastapi>=0.110
+uvicorn[standard]>=0.27
