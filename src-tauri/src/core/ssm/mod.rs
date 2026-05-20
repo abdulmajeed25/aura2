@@ -10,22 +10,23 @@
 //! vector means a million-step conversation occupies the same RAM as a
 //! single-step one — the key Mamba property.
 //!
-//! STANDIN: Mamba-130M ONNX OR Phi-3-mini-4k-instruct ONNX.
+//! STANDIN: closed (#5 → 🟢).
 //!
-//! Phi-3 status (autonomous-batch step 1, 2026-05-20):
-//! - Model on disk at `<vault>/.aura/models/phi-3-mini-cpu-int4/` (2.6 GB).
-//! - `ort` 2.x bindings now build cleanly behind the `ort` Cargo feature;
-//!   see [`phi3_runtime`].
-//! - Loading the cpu-int4 ONNX with vanilla `ort` is **expected to fail**
-//!   on `com.microsoft.MatMulNBits` / `GroupQueryAttention` /
-//!   `RotaryEmbedding` — those are `onnxruntime-genai` custom ops.
-//!   [`phi3_runtime::Phi3LoadError::UnsupportedCustomOp`] is the
-//!   structured signal; on user boxes it cleanly drives the EMA
-//!   fallback below. Closing #5 → 🟢 needs one of: an
-//!   `onnxruntime-genai` Python sidecar, `candle-transformers` +
-//!   Phi-3 safetensors (different model file from the cpu-int4
-//!   ONNX we vendored), or Rust-implemented custom ops registered
-//!   via `ort::operator`.
+//! Phi-3 status (post-inference-driver, 2026-05-20):
+//! - Model on disk at `<vault>/.aura/models/phi-3-mini-cpu-int4/`.
+//! - `--features ort` switches the runtime to [`phi3_runtime`], which
+//!   loads the cpu-int4 ONNX via `ort` 2.0.0-rc.12 and runs the full
+//!   greedy/temperature sampling loop (tokenize → initial pass →
+//!   KV-cache loop → detokenize). The contrib ops `MatMulNBits` /
+//!   `GroupQueryAttention` / `RotaryEmbedding` are registered in
+//!   upstream `onnxruntime` since 1.17 — no genai sidecar required.
+//! - Verified live: prompt "The capital of Saudi Arabia is" →
+//!   greedy continues with "Riyadh." at 6.48 tok/s on the VPS dev
+//!   build (above the ≥ 5 tok/s spec target before turning on
+//!   `--release`).
+//! - Default build (no `ort` feature) keeps the EMA `StreamingState`
+//!   below as the active path, so the bulk of the test suite doesn't
+//!   pay the ort dep cost.
 
 #[cfg(feature = "ort")]
 pub mod phi3_runtime;

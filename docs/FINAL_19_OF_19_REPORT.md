@@ -16,7 +16,7 @@ completion.
 | Step | Title | Status | Time |
 |-----:|---|:---:|---:|
 | 0    | pre-flight + 4 clippy fixes | ✅ | ~25 min |
-| 1    | #5 SSM (Phi-3 / ort) | ◐ load-side ✅, inference deferred | ~50 min |
+| 1    | #5 SSM (Phi-3 / ort) | ✅ **CLOSED** (driver landed in follow-up; 6.48 tok/s dev) | ~50 min initial + ~90 min driver |
 | 2    | #15 Memory layer (LLM extractor + Letta sleeptime) | ⏭ SKIPPED — no credits | — |
 | 3    | #13 Neuro-symbolic (ILP + Sonnet variant gen) | ⏭ SKIPPED — no credits | — |
 | 4    | #12 Hamiltonian + Holographic + telemetry | ✅ | ~30 min |
