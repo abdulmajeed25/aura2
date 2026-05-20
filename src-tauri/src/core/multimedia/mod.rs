@@ -18,8 +18,46 @@
 //! `core::multimedia::encoder::MediaEncoder` against ONNX, drop in the new
 //! struct, and re-`scan_media`. No schema change is required.
 
+pub mod onnx_siglip;
+pub mod onnx_whisper;
 pub mod tools;
 pub mod url_ingest;
+
+use std::sync::Arc;
+
+/// Bundle of ONNX media encoders. `None` for either means we don't
+/// have that modality on disk; the caller falls back to the existing
+/// `encode_media` byte-fingerprint blend for those files.
+pub struct MediaEncoders {
+    pub audio: Option<Arc<onnx_whisper::OnnxWhisper>>,
+    pub vision: Option<Arc<onnx_siglip::OnnxSiglip>>,
+}
+
+impl MediaEncoders {
+    /// Try to load `vault/.aura/models/whisper-tiny/` and
+    /// `vault/.aura/models/siglip-base/`. Silent-skip on missing or
+    /// load failure (logs at `warn` so the user sees the reason).
+    pub fn pick(vault_root: &Path) -> Self {
+        let models = vault_root.join(".aura").join("models");
+        let audio = match onnx_whisper::OnnxWhisper::load(&models.join("whisper-tiny")) {
+            Ok(w) => Some(Arc::new(w)),
+            Err(onnx_whisper::WhisperError::ModelMissing(_)) => None,
+            Err(e) => {
+                tracing::warn!(target: "aura::media", "whisper-tiny load failed: {e}");
+                None
+            }
+        };
+        let vision = match onnx_siglip::OnnxSiglip::load(&models.join("siglip-base")) {
+            Ok(s) => Some(Arc::new(s)),
+            Err(onnx_siglip::SiglipError::ModelMissing(_)) => None,
+            Err(e) => {
+                tracing::warn!(target: "aura::media", "siglip-base load failed: {e}");
+                None
+            }
+        };
+        Self { audio, vision }
+    }
+}
 
 use std::path::Path;
 

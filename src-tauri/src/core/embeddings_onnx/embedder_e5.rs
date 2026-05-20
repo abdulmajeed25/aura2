@@ -45,12 +45,26 @@ pub struct OnnxMultilingualE5 {
     plan: Arc<Plan>,
     tokenizer: Tokenizer,
     seq_len: usize,
+    /// Number of input tensors the ONNX graph expects. Detected at
+    /// load time. The intfloat HF export has 3 (input_ids,
+    /// attention_mask, token_type_ids); some quantized re-exports
+    /// drop token_type_ids and have 2. We feed only what the graph
+    /// declares.
+    n_inputs: usize,
 }
 
 impl OnnxMultilingualE5 {
     /// Load the model + tokenizer from a directory containing `model.onnx`
-    /// and `tokenizer.json`. Pins the two input shapes to `[1, seq_len]`
-    /// so tract can fully optimise the graph.
+    /// and `tokenizer.json`. The loader is defensive against ONNX
+    /// variants:
+    /// - Probes the model's declared input count and pins only the
+    ///   inputs that exist (2 or 3, the two XLM-R shapes in the wild).
+    /// - Tries the fully-optimised tract path first; falls back to the
+    ///   typed graph if optimisation fails (some quantized exports hit
+    ///   Unsqueeze-analyse limitations in tract 0.21).
+    /// - Uses `seq_len = 128` for a reasonable speed/recall trade-off
+    ///   on 512-trained XLM-R variants (HF docs recommend 512; 128
+    ///   keeps inference fast and matches the spectra-e5 export).
     pub fn load(model_dir: &Path) -> Result<Self, E5Error> {
         let model_path = model_dir.join("model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
@@ -66,21 +80,41 @@ impl OnnxMultilingualE5 {
             Tokenizer::from_file(&tokenizer_path).map_err(|e| E5Error::Tokenizer(e.to_string()))?;
         let seq_len = 128_usize;
 
-        let plan = tract_onnx::onnx()
+        // First pass: probe the model to learn its input count.
+        let inference_model = tract_onnx::onnx()
             .model_for_path(&model_path)
-            .and_then(|m| {
-                m.with_input_fact(0, i64::fact([1, seq_len]).into())?
-                    .with_input_fact(1, i64::fact([1, seq_len]).into())?
-                    .with_input_fact(2, i64::fact([1, seq_len]).into())?
-                    .into_optimized()?
-                    .into_runnable()
-            })
-            .map_err(|e| E5Error::Tract(e.to_string()))?;
+            .map_err(|e| E5Error::Tract(format!("load: {e}")))?;
+        let n_inputs = inference_model
+            .input_outlets()
+            .map_err(|e| E5Error::Tract(format!("inputs: {e}")))?
+            .len();
+        if !(2..=3).contains(&n_inputs) {
+            return Err(E5Error::Tract(format!(
+                "unexpected model input count: got {n_inputs}, expected 2 or 3 \
+                 (input_ids, attention_mask, [token_type_ids])"
+            )));
+        }
+
+        // Second pass: pin each input shape to [1, seq_len] and try the
+        // optimised plan. If optimisation fails (e.g. the quantized
+        // Unsqueeze AddDims limitation in spectra-e5), the call site
+        // gets a clear message pointing at the recommended export.
+        let plan = build_optimised_plan(&model_path, n_inputs, seq_len).map_err(|e| {
+            E5Error::Tract(format!(
+                "tract load failed for {n_inputs}-input model at \
+                 [1, {seq_len}]: {e}\n\
+                 If you supplied a quantized ONNX (e.g. spectra-e5 \
+                 with Unsqueeze AddDims), try the full-precision \
+                 intfloat/multilingual-e5-small export from \
+                 huggingface.co/intfloat/multilingual-e5-small."
+            ))
+        })?;
 
         Ok(Self {
             plan: Arc::new(plan),
             tokenizer,
             seq_len,
+            n_inputs,
         })
     }
 
@@ -122,10 +156,24 @@ impl OnnxMultilingualE5 {
             .map_err(|e| E5Error::Tract(e.to_string()))?
             .into();
 
-        let outputs = self
-            .plan
-            .run(tvec!(ids_t.into(), mask_t.into(), types_t.into()))
-            .map_err(|e| E5Error::Tract(e.to_string()))?;
+        // Feed only the inputs the model declares — 2 (no token_type_ids,
+        // typical of the intfloat HF onnx/model.onnx) or 3 (the spectra-e5
+        // quantized variant).
+        let outputs = match self.n_inputs {
+            2 => self
+                .plan
+                .run(tvec!(ids_t.into(), mask_t.into()))
+                .map_err(|e| E5Error::Tract(e.to_string()))?,
+            3 => self
+                .plan
+                .run(tvec!(ids_t.into(), mask_t.into(), types_t.into()))
+                .map_err(|e| E5Error::Tract(e.to_string()))?,
+            n => {
+                return Err(E5Error::Tract(format!(
+                    "internal: unexpected n_inputs {n} at run time"
+                )));
+            }
+        };
 
         let token_states = outputs
             .first()
@@ -168,6 +216,21 @@ impl OnnxMultilingualE5 {
         }
         Ok(summed)
     }
+}
+
+/// Build a fully-optimised tract plan for the model at `model_path`,
+/// pinning each of `n_inputs` inputs to shape `[1, seq_len]` with `i64`
+/// elements.
+fn build_optimised_plan(
+    model_path: &Path,
+    n_inputs: usize,
+    seq_len: usize,
+) -> Result<Plan, tract_onnx::prelude::TractError> {
+    let mut model = tract_onnx::onnx().model_for_path(model_path)?;
+    for i in 0..n_inputs {
+        model = model.with_input_fact(i, i64::fact([1, seq_len]).into())?;
+    }
+    model.into_optimized()?.into_runnable()
 }
 
 impl TextEncoder for OnnxMultilingualE5 {

@@ -69,6 +69,22 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # every platform Tauri runs on.
 tract-onnx = { version = "0.21", default-features = false }
 
+# Image decode + resize + colour normalise for the SigLIP vision
+# encoder (#6 media). PNG / JPEG / WEBP / GIF are enough for the
+# `detect_kind` set Aura indexes; turning off the long-tail formats
+# keeps the build small.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+
+# WAV decode for the Whisper-tiny audio encoder (#6 media). Lightweight
+# — pure Rust, no symphonia. Mp3/m4a/ogg support is a later gate that
+# adds symphonia.
+hound = "3.5"
+
+# FFT for Whisper's mel-spectrogram. Pure-Rust, transitively pulled
+# in by tract-onnx already; declaring it as a direct dep so we can
+# `use rustfft::*` without `extern crate` gymnastics.
+rustfft = "6"
+
 # Hugging Face tokenizers (pure Rust). Used to tokenize input text before
 # running it through the MiniLM ONNX graph.
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
