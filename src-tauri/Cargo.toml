@@ -92,10 +92,12 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 # async fn in traits with object-safety. Used by the AIProvider trait so we
 # can put Anthropic / OpenAI / Ollama behind an `Arc<dyn AIProvider>`.
 async-trait = "0.1"
+ort = { version = "2.0.0-rc.9", features = ["download-binaries", "half"], optional = true }
 
 [features]
 # default Tauri custom-protocol feature for production builds
 custom-protocol = ["tauri/custom-protocol"]
+ort = ["dep:ort"]
 
 [profile.release]
 opt-level = 3
