@@ -31,6 +31,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/008_prompt_scores.sql"),
     ),
     ("009_facts", include_str!("migrations/009_facts.sql")),
+    (
+        "010_fhrr_and_telemetry",
+        include_str!("migrations/010_fhrr_and_telemetry.sql"),
+    ),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.

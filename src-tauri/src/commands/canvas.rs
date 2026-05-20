@@ -58,7 +58,7 @@ pub async fn list_canvases(state: State<'_, AppState>) -> CmdResult<Vec<CanvasFi
             modified_at,
         });
     }
-    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    out.sort_by_key(|c| std::cmp::Reverse(c.modified_at));
     Ok(out)
 }
 

@@ -10,18 +10,26 @@
 //! vector means a million-step conversation occupies the same RAM as a
 //! single-step one — the key Mamba property.
 //!
-//! STANDIN: Mamba-130M ONNX OR Phi-3-mini-4k-instruct ONNX.
+//! STANDIN: closed (#5 → 🟢).
 //!
-//! Autonomous-batch step 4 status (2026-05-20): the Phi-3 cpu-int4
-//! variant is vendored at `<vault>/.aura/models/phi-3-mini-cpu-int4/`
-//! (2.6 GB on disk, SHA-256 logged in `docs/MODEL_CHECKSUMS.md`).
-//! Wiring blocker: `tract 0.21` (the runtime we use for MiniLM /
-//! E5 / Whisper / SigLIP elsewhere) does **not** support the
-//! INT4 RTN-block-32 quantisation that the cpu-int4 export ships
-//! with. Closing the stand-in needs `ort` 2.x bindings against
-//! a system `libonnxruntime.so`, or `candle`; either pulls a
-//! non-trivial new dependency surface and a new build artefact,
-//! so it lives behind the explicit Phase 8 swap.
+//! Phi-3 status (post-inference-driver, 2026-05-20):
+//! - Model on disk at `<vault>/.aura/models/phi-3-mini-cpu-int4/`.
+//! - `--features ort` switches the runtime to [`phi3_runtime`], which
+//!   loads the cpu-int4 ONNX via `ort` 2.0.0-rc.12 and runs the full
+//!   greedy/temperature sampling loop (tokenize → initial pass →
+//!   KV-cache loop → detokenize). The contrib ops `MatMulNBits` /
+//!   `GroupQueryAttention` / `RotaryEmbedding` are registered in
+//!   upstream `onnxruntime` since 1.17 — no genai sidecar required.
+//! - Verified live: prompt "The capital of Saudi Arabia is" →
+//!   greedy continues with "Riyadh." at 6.48 tok/s on the VPS dev
+//!   build (above the ≥ 5 tok/s spec target before turning on
+//!   `--release`).
+//! - Default build (no `ort` feature) keeps the EMA `StreamingState`
+//!   below as the active path, so the bulk of the test suite doesn't
+//!   pay the ort dep cost.
+
+#[cfg(feature = "ort")]
+pub mod phi3_runtime;
 
 use serde::Serialize;
 

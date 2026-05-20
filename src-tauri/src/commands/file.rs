@@ -80,7 +80,7 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<Vec<FileEntry>>
         });
     }
 
-    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    out.sort_by_key(|f| std::cmp::Reverse(f.modified_at));
     Ok(out)
 }
 

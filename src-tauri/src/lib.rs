@@ -7,6 +7,7 @@ pub mod memory;
 pub mod orchestration;
 pub mod protocols;
 pub mod reasoning;
+pub mod sync;
 pub mod utils;
 
 use std::sync::Arc;

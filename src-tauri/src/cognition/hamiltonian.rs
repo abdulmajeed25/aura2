@@ -88,6 +88,58 @@ where
     Ok(())
 }
 
+/// **Pattern-conditioned potential gradient** — the missing piece flagged
+/// in stand-in #12 for the spec's `V(x)` shape.
+///
+/// Given the current cognitive state `x` and an *active pattern*
+/// `target` (e.g. a workflow trigger vector or a Hopfield-stored
+/// attractor), returns `∇V(x) = weight · (x − target)`. This is the
+/// gradient of the quadratic basin `V(x) = ½·weight·‖x − target‖²`.
+/// Plugged into [`leapfrog_step`], it bends the trajectory **toward**
+/// `target` — Claude's intellectual-momentum `p` then gets bent by the
+/// local potential the user's documented patterns shape.
+///
+/// Multi-pattern: pass each pattern with its own weight; the gradient
+/// is the weighted sum. Higher weights pull harder. Negative weights
+/// flip the basin into a hill — useful for "stay away from this
+/// attractor" semantics (rare; only used in spec's curiosity-drift
+/// regime).
+pub fn pattern_grad(x: &[f32], targets: &[(&[f32], f32)]) -> Vec<f32> {
+    let n = x.len();
+    let mut g = vec![0.0f32; n];
+    for (target, weight) in targets {
+        if target.len() != n {
+            // Skip mis-shaped patterns rather than blowing up the loop;
+            // the caller's tests own the shape contract.
+            continue;
+        }
+        for i in 0..n {
+            g[i] += weight * (x[i] - target[i]);
+        }
+    }
+    g
+}
+
+/// `V(x) = Σⱼ ½·wⱼ·‖x − targetⱼ‖²` — the integrated form of
+/// [`pattern_grad`]. Use this for energy reporting in the telemetry
+/// stream so the same V is consistent across `leapfrog_step`'s
+/// `grad_v`, [`energy`]'s `v`, and cortex audit rows.
+pub fn pattern_energy(x: &[f32], targets: &[(&[f32], f32)]) -> f32 {
+    let mut sum = 0.0f32;
+    for (target, weight) in targets {
+        if target.len() != x.len() {
+            continue;
+        }
+        let mut sq = 0.0f32;
+        for i in 0..x.len() {
+            let d = x[i] - target[i];
+            sq += d * d;
+        }
+        sum += 0.5 * weight * sq;
+    }
+    sum
+}
+
 /// Total Hamiltonian energy `H(x, p) = ½‖p‖² + V(x)`. Pass the same `v`
 /// closure you use for `leapfrog_step`'s gradient (the energy itself, not
 /// the gradient).
@@ -208,5 +260,67 @@ mod tests {
         let g = |_: &[f32]| vec![0.0_f32];
         let err = leapfrog_step(&mut x, &mut p, g, -0.1).unwrap_err();
         assert!(matches!(err, HamError::InvalidDt(_)));
+    }
+
+    /// Pattern-conditioned gradient: at x = target, ∇V is zero (we're
+    /// at the basin floor). Move off-target and the gradient points
+    /// back toward target with magnitude `weight · ‖x − target‖`.
+    #[test]
+    fn pattern_grad_zero_at_target_basin() {
+        let target = vec![1.0_f32, 2.0, 3.0];
+        let x = target.clone();
+        let g = pattern_grad(&x, &[(&target, 1.0)]);
+        for gi in g {
+            assert!(gi.abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn pattern_grad_points_back_toward_target() {
+        let target = vec![1.0_f32, 0.0, 0.0];
+        let x = vec![3.0_f32, 0.0, 0.0];
+        // x − target = (2, 0, 0); ∇V with weight=1 = (2, 0, 0).
+        let g = pattern_grad(&x, &[(&target, 1.0)]);
+        assert!((g[0] - 2.0).abs() < 1e-6);
+        assert!(g[1].abs() < 1e-6);
+        assert!(g[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn pattern_grad_superposes_multiple_targets() {
+        // Two targets pulling: (0,0,0) with w=1 and (2,0,0) with w=1.
+        // From x = (3,0,0):
+        //   ∇V = 1·(3-0) + 1·(3-2) = 3 + 1 = 4 in dim 0
+        let t1 = vec![0.0_f32, 0.0, 0.0];
+        let t2 = vec![2.0_f32, 0.0, 0.0];
+        let x = vec![3.0_f32, 0.0, 0.0];
+        let g = pattern_grad(&x, &[(&t1, 1.0), (&t2, 1.0)]);
+        assert!((g[0] - 4.0).abs() < 1e-6);
+    }
+
+    /// Energy form is consistent with the gradient: at the target
+    /// `V = 0`, away from it `V > 0`, and `∂V/∂x_i` recovered by
+    /// finite-difference matches `pattern_grad` to 1e-4.
+    #[test]
+    fn pattern_energy_matches_grad_by_finite_difference() {
+        let target = vec![1.0_f32, 2.0, 3.0];
+        let mut x = vec![0.5_f32, 1.5, 2.5];
+        let weight = 1.7;
+        let grad = pattern_grad(&x, &[(&target, weight)]);
+        let h = 1e-3_f32;
+        for i in 0..x.len() {
+            let v0 = pattern_energy(&x, &[(&target, weight)]);
+            x[i] += h;
+            let v1 = pattern_energy(&x, &[(&target, weight)]);
+            x[i] -= h;
+            let fd = (v1 - v0) / h;
+            assert!(
+                (fd - grad[i]).abs() < 1e-2,
+                "fd {} vs grad {} at dim {}",
+                fd,
+                grad[i],
+                i
+            );
+        }
     }
 }

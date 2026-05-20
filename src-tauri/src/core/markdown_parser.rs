@@ -255,6 +255,7 @@ fn heading_level_to_u32(level: HeadingLevel) -> u32 {
 /// Walk the parser at offset granularity, emitting one block for every
 /// top-level Markdown element (Paragraph, Heading, BlockQuote, CodeBlock, List,
 /// HtmlBlock, Table, FootnoteDefinition).
+#[allow(clippy::collapsible_match)]
 fn extract_blocks(body: &str) -> Vec<ParsedBlock> {
     let mut blocks: Vec<ParsedBlock> = Vec::new();
     let mut depth: u32 = 0;
