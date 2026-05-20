@@ -18,5 +18,6 @@
 //! state against each workflow's `trigger_vector`. That wiring lands
 //! once the executor exists.
 
+pub mod executor;
 pub mod skills;
 pub mod workflows;

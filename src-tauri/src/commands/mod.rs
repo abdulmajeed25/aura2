@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod ai_telemetry;
 pub mod block;
 pub mod canvas;
 pub mod cortex;

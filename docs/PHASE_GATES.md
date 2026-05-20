@@ -1390,3 +1390,139 @@ this branch + dropping the user's Anthropic key at
 - `STOP — request "continue"` before steps 4–6 (agent executor,
   prompt-caching telemetry UI, prompt self-modifier).
 
+
+### Phase batch — Steps 4 + 5 + 6: Executor + Telemetry + Self-Modifier
+
+The remaining three steps of the API-key batch. Single commit because
+each step is small and they share the same plumbing from Steps 1-3.
+
+- **Step 4 — Agent executor (#16b):**
+  - `orchestration/executor.rs`:
+    - `execute_workflow(workflow, skills, provider, vault, params, dry_run)`
+      walks the workflow's `steps` array; dispatches per `kind`.
+    - Two step kinds in the MVP:
+      - `"llm"` — invokes `AIProvider::chat`. `args.skill` (optional)
+        loads the skill's SKILL.md body as the 1h-cached system prompt;
+        `args.user_prompt` is the user template with `{{name}}`
+        substitution from workflow params + `{{prev_output}}` from the
+        preceding step's `content` field.
+      - `"write_note"` — atomic markdown write. `args.path` +
+        `args.content` are templated. Dry-run mode produces a
+        `PendingWrite` record (path + bytes + preview) and never
+        touches disk; apply mode writes + calls `vault.index_one`.
+    - Output: `ExecutionResult { workflow_name, dry_run, steps,
+      writes, error }`. Step failure halts the chain — we don't
+      run steps whose `{{prev_output}}` would be undefined.
+    - `substitute()` helper: replaces `{{name}}` but leaves unknown
+      placeholders intact (easier to debug than silently filling).
+  - `commands::orchestration::run_workflow(name, params, dry_run)` —
+    loads the named workflow + every skill, builds the provider when
+    a key is configured, executes.
+
+- **Step 5 — Telemetry commands (#17):**
+  - `commands/ai_telemetry.rs` + `VaultDb::audit_recent` /
+    `audit_today_cost_cents` / `audit_cache_hit_ratio`:
+    - `get_cache_stats(window_hours)` — hit ratio for the status-bar
+      badge.
+    - `get_today_cost_cents()` — daily budget meter + the default
+      cap (`DEFAULT_DAILY_CAP_CENTS = 500`).
+    - `get_recent_audit_log(limit)` — last N rows for the debug
+      panel. `metadata_json` is **deliberately not projected** so
+      a stray prompt could never reach the wire.
+  - The cache-hit ratio is computed against
+    `cache_read / (cache_read + cache_creation + uncached)` — the
+    spec's headline "≥ 70%" target is a frontend assertion against
+    this command.
+
+- **Step 6 — Prompt self-modifier scaffolding (#14b):**
+  - `reasoning/self_modifier.rs`:
+    - `PromptRegistry::load_from(root, defaults)` walks
+      `<vault>/.aura/prompts/<name>/v<n>.md` files. Highest
+      `v<n>` wins as the champion. Hardcoded defaults are
+      fallback when no on-disk version exists; an on-disk version
+      always overrides.
+    - `PromptCall { prompt_name, prompt_version, input_hash,
+      score, user_feedback, metadata_json }` + `record_call(db, …)`
+      append into `prompt_calls`.
+    - `input_hash(text)` — SHA-256 hex so we can replay/dedupe
+      without storing raw user input in the DB.
+    - `scoring::wilson_interval(positives, n)` and
+      `scoring::should_promote(challenger, champion)` —
+      conservative A/B criterion (the challenger's Wilson lower
+      bound must exceed the champion's lower bound). Catches
+      "5/5 perfect record" overfitting (lower=0.57 vs a champion
+      with 90/100 lower=0.83 → champion stays).
+  - DB migration `008_prompt_scores.sql`: `prompt_calls` table
+    indexed by `(prompt_name, prompt_version)` and `timestamp DESC`.
+  - **Deferred:** the periodic Sonnet-driven variant generator +
+    A/B routing job. The scoring engine + registry land first so
+    we have schema + helpers ready before observed data shapes
+    the loop.
+
+- **Math-driven TDD (+19 tests):**
+  - Step 4 (10): substitute placeholders, leaves unknowns,
+    LLM step with cached skill body, dry-run doesn't touch disk,
+    apply writes + indexes, unsupported kind halts the chain,
+    LLM-then-write chains `{{prev_output}}`, missing-provider
+    error path, empty-workflow error, metadata carries
+    `op=workflow_step` + workflow name + step_idx for audit.
+  - Step 6 (9): empty root yields default-only, loads highest
+    version as champion, on-disk overrides default, `input_hash`
+    determinism, Wilson 0-samples returns (0,0), Wilson
+    9-of-10 lower bound in (0.55, 0.85), `should_promote`
+    rejects small-sample perfect record, `should_promote`
+    accepts clear winner.
+
+- **Reproduce:**
+  ```bash
+  cd src-tauri
+  cargo clippy --no-deps --all-targets -- -D warnings
+  cargo test                # 271 / 0 / 8
+  ```
+
+  On the user's machine:
+  ```
+  # Drop a workflow at <vault>/.aura/workflows/daily-review.json:
+  # { "name": "daily-review", "description": "...",
+  #   "steps": [
+  #     {"kind":"llm","args":{"skill":"reviewer","user_prompt":"Today's notes for {{date}}"}},
+  #     {"kind":"write_note","args":{"path":"reviews/{{date}}.md","content":"{{prev_output}}"}}
+  #   ]
+  # }
+  #
+  # Drop a skill at <vault>/.aura/skills/reviewer/SKILL.md:
+  # ---
+  # name: reviewer
+  # description: Synthesises a daily journal
+  # ---
+  # You write concise daily reviews. …
+  #
+  # Then:
+  tauri invoke run_workflow --workflow-name daily-review \
+      --params '{"date":"2026-05-19"}' --dry-run false
+  # → ExecutionResult { steps: [...], writes: [PendingWrite{ applied: true, ... }] }
+  ```
+
+- **Expected output:** clippy strict clean. Suite: 271 / 0 / 8
+  (was 252+8 after Step 3; +10 Step 4 + 9 Step 6 = +19; Step 5
+  is API + tests pass through Step 1's audit machinery).
+  Tauri command count: 51 → 55.
+
+- **Stand-ins delta:**
+  - **#16 closed** (🟡 → 🟢) — executor MVP shipped; future step
+    kinds (search, shell, branch) are new match arms.
+  - **#17 closed** (🔴 → 🟢) — cache_control breakpoints emit
+    correctly + telemetry commands ready for the UI badge.
+  - **#14 still partial** (🟡, narrowed) — VSA + Z3 + prompt
+    versioning + scoring all in; Sonnet variant generator +
+    evolution job deferred until production scoring data exists.
+
+- **Forbidden actions during the batch — all honoured:** API key
+  never logged, never serialised, never enters error messages or
+  audit metadata. Key file gitignored. No localStorage, no
+  non-Anthropic endpoints. The prompt_calls table stores SHA-256
+  of input only — no raw prompt content.
+
+`STOP — request "continue"` before further work. The batch is
+complete. Remaining stand-ins all need genuine external input
+(model files, GUI display, or Mem0/Letta backends).

@@ -26,6 +26,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "007_audit_log",
         include_str!("migrations/007_audit_log.sql"),
     ),
+    (
+        "008_prompt_scores",
+        include_str!("migrations/008_prompt_scores.sql"),
+    ),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -557,6 +561,73 @@ impl VaultDb {
             return Ok(None);
         }
         Ok(Some(cache_read as f32 / total as f32))
+    }
+
+    /// Append one row to `prompt_calls` (Phase 6 self-modifier).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prompt_call_insert(
+        &self,
+        timestamp: i64,
+        prompt_name: &str,
+        prompt_version: i64,
+        input_hash: &str,
+        score: Option<f64>,
+        user_feedback: i64,
+        metadata_json: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO prompt_calls
+                    (timestamp, prompt_name, prompt_version, input_hash,
+                     score, user_feedback, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                libsql::params![
+                    timestamp,
+                    prompt_name.to_string(),
+                    prompt_version,
+                    input_hash.to_string(),
+                    score,
+                    user_feedback,
+                    metadata_json.to_string(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Most recent audit_log rows, newest first.
+    pub async fn audit_recent(&self, limit: i64) -> Result<Vec<AuditLogRowDb>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, timestamp, actor, operation, model,
+                        input_tokens, cache_creation_input_tokens,
+                        cache_read_input_tokens, output_tokens,
+                        cost_micro_cents, duration_ms, status
+                 FROM audit_log
+                 ORDER BY timestamp DESC, id DESC
+                 LIMIT ?1",
+                libsql::params![limit],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(AuditLogRowDb {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                actor: row.get(2)?,
+                operation: row.get(3)?,
+                model: row.get(4).ok(),
+                input_tokens: row.get(5).unwrap_or(0),
+                cache_creation_input_tokens: row.get(6).unwrap_or(0),
+                cache_read_input_tokens: row.get(7).unwrap_or(0),
+                output_tokens: row.get(8).unwrap_or(0),
+                cost_micro_cents: row.get(9).unwrap_or(0),
+                duration_ms: row.get(10).unwrap_or(0),
+                status: row.get(11).unwrap_or_default(),
+            });
+        }
+        Ok(out)
     }
 
     pub async fn list_media(&self) -> Result<Vec<MediaRow>> {
@@ -1172,14 +1243,36 @@ impl VaultDb {
     }
 }
 
+// ---- Phase batch step 5/6 ----
+
+/// One row returned by [`VaultDb::audit_recent`]. The `metadata_json`
+/// field is **not** projected into this struct — telemetry UIs don't
+/// need it, and the per-call metadata is the only place a stray prompt
+/// could land.
+#[derive(Debug, Clone)]
+pub struct AuditLogRowDb {
+    pub id: i64,
+    pub timestamp: i64,
+    pub actor: String,
+    pub operation: String,
+    pub model: Option<String>,
+    pub input_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub cache_read_input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_micro_cents: i64,
+    pub duration_ms: i64,
+    pub status: String,
+}
+
 /// Payload for [`VaultDb::replace_communities`].
 ///
 /// `partition_cid` is the community's id *within* its `level` (as
 /// returned by the Leiden partition map). `parent_partition_cid`, if
 /// present, is the cid in `level + 1` (one step coarser) that this
 /// community is a sub-piece of — used to populate the `parent_id`
-/// foreign key. The coarsest level always has `parent_partition_cid =
-/// None`.
+/// foreign key. The coarsest level always has
+/// `parent_partition_cid = None`.
 pub struct ReplaceCommunity<'a> {
     pub level: i64,
     pub partition_cid: u32,

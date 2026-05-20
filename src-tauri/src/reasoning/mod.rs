@@ -14,5 +14,6 @@
 //! self-modifier from the spec are still pending — they need either an
 //! LLM or a more involved rule-induction engine.
 
+pub mod self_modifier;
 pub mod vsa_inference;
 pub mod z3_bridge;

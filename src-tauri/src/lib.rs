@@ -96,6 +96,10 @@ pub fn run() {
             commands::embeddings::download_embeddings_model,
             commands::orchestration::list_skills,
             commands::orchestration::list_workflows,
+            commands::orchestration::run_workflow,
+            commands::ai_telemetry::get_cache_stats,
+            commands::ai_telemetry::get_today_cost_cents,
+            commands::ai_telemetry::get_recent_audit_log,
         ])
         .setup(|_app| {
             tracing::info!("Aura starting up");
