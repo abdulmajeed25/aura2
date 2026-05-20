@@ -30,6 +30,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "008_prompt_scores",
         include_str!("migrations/008_prompt_scores.sql"),
     ),
+    ("009_facts", include_str!("migrations/009_facts.sql")),
 ];
 
 /// Wrapper around a libsql connection scoped to a single vault.
@@ -1241,6 +1242,188 @@ impl VaultDb {
         }
         Ok(healed)
     }
+
+    // ---- Phase batch step 6: Mem0 fact memory (migration 009) ----
+
+    /// Insert one row into `facts`. Callers (typically
+    /// [`FactStore::add`](crate::memory::store::FactStore::add)) own
+    /// id allocation so retries against the same logical fact stay
+    /// idempotent at the application layer.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fact_insert(
+        &self,
+        id: &str,
+        text: &str,
+        embedding: &[u8],
+        category: Option<&str>,
+        confidence: f64,
+        source_session: Option<&str>,
+        ts_millis: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO facts
+                    (id, text, embedding, category, confidence,
+                     source_session, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                libsql::params![
+                    id.to_string(),
+                    text.to_string(),
+                    embedding.to_vec(),
+                    category.map(|s| s.to_string()),
+                    confidence,
+                    source_session.map(|s| s.to_string()),
+                    ts_millis,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn fact_text(&self, id: &str) -> Result<Option<String>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT text FROM facts WHERE id = ?1",
+                libsql::params![id.to_string()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(r) => Ok(Some(r.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn fact_update(
+        &self,
+        id: &str,
+        new_text: &str,
+        new_embedding: &[u8],
+        ts_millis: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE facts
+                 SET text = ?2, embedding = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                libsql::params![
+                    id.to_string(),
+                    new_text.to_string(),
+                    new_embedding.to_vec(),
+                    ts_millis,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn fact_soft_delete(&self, id: &str, ts_millis: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE facts SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+                libsql::params![id.to_string(), ts_millis],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn fact_history_insert(
+        &self,
+        fact_id: &str,
+        op: &str,
+        prev_text: Option<&str>,
+        new_text: Option<&str>,
+        reason: Option<&str>,
+        ts_millis: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO fact_history
+                    (fact_id, op, prev_text, new_text, reason, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                libsql::params![
+                    fact_id.to_string(),
+                    op.to_string(),
+                    prev_text.map(|s| s.to_string()),
+                    new_text.map(|s| s.to_string()),
+                    reason.map(|s| s.to_string()),
+                    ts_millis,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn fact_list_active(&self) -> Result<Vec<FactRowDb>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, text, embedding, category, confidence,
+                        source_session, created_at, updated_at
+                 FROM facts
+                 WHERE deleted_at IS NULL
+                 ORDER BY updated_at DESC",
+                (),
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(FactRowDb {
+                id: row.get(0)?,
+                text: row.get(1)?,
+                embedding: row.get::<Vec<u8>>(2)?,
+                category: row.get(3).ok(),
+                confidence: row.get(4)?,
+                source_session: row.get(5).ok(),
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn fact_history(
+        &self,
+        fact_id: &str,
+    ) -> Result<Vec<crate::memory::store::FactHistoryEntry>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT fact_id, op, prev_text, new_text, reason, timestamp
+                 FROM fact_history
+                 WHERE fact_id = ?1
+                 ORDER BY timestamp ASC, id ASC",
+                libsql::params![fact_id.to_string()],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(crate::memory::store::FactHistoryEntry {
+                fact_id: row.get(0)?,
+                op: row.get(1)?,
+                prev_text: row.get(2).ok(),
+                new_text: row.get(3).ok(),
+                reason: row.get(4).ok(),
+                timestamp: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Row shape returned by [`VaultDb::fact_list_active`]. Lives here
+/// rather than in `schemas.rs` because nothing outside the memory
+/// module consumes it.
+#[derive(Debug, Clone)]
+pub struct FactRowDb {
+    pub id: String,
+    pub text: String,
+    pub embedding: Vec<u8>,
+    pub category: Option<String>,
+    pub confidence: f64,
+    pub source_session: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 // ---- Phase batch step 5/6 ----

@@ -15,6 +15,7 @@
 
 pub mod audit;
 pub mod providers;
+pub mod retrieval;
 pub mod secrets;
 
 pub use audit::{AuditEvent, DbAuditLogger};

@@ -9,6 +9,19 @@
 //! input embedding. The exponential-moving-average over a fixed-size hidden
 //! vector means a million-step conversation occupies the same RAM as a
 //! single-step one — the key Mamba property.
+//!
+//! STANDIN: Mamba-130M ONNX OR Phi-3-mini-4k-instruct ONNX.
+//!
+//! Autonomous-batch step 4 status (2026-05-20): the Phi-3 cpu-int4
+//! variant is vendored at `<vault>/.aura/models/phi-3-mini-cpu-int4/`
+//! (2.6 GB on disk, SHA-256 logged in `docs/MODEL_CHECKSUMS.md`).
+//! Wiring blocker: `tract 0.21` (the runtime we use for MiniLM /
+//! E5 / Whisper / SigLIP elsewhere) does **not** support the
+//! INT4 RTN-block-32 quantisation that the cpu-int4 export ships
+//! with. Closing the stand-in needs `ort` 2.x bindings against
+//! a system `libonnxruntime.so`, or `candle`; either pulls a
+//! non-trivial new dependency surface and a new build artefact,
+//! so it lives behind the explicit Phase 8 swap.
 
 use serde::Serialize;
 
